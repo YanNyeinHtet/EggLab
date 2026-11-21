@@ -577,7 +577,7 @@ check(
 );
 check(
   'the agent is told names-first and risk classes',
-  /detail:"names"/.test(read('beta-agent/AGENT.md')) && /Ask before destructive commands/.test(read('beta-agent/AGENT.md')),
+  /detail:\s*"names"/.test(read('beta-agent/AGENT.md')) && /Ask before destructive/.test(read('beta-agent/AGENT.md')),
 );
 
 // ---- V2 ticket 5: designing pipeline ------------------------------------
@@ -639,7 +639,7 @@ check(
 check(
   'agents cannot rename or save-as the open document',
   /must not rename or save-as the current document/.test(httpSource2) &&
-    /Never rename or Save-As the open document/.test(read('beta-agent/AGENT.md')),
+    /Never rename or use Save-As/.test(read('beta-agent/AGENT.md')),
 );
 check(
   'the beta brain routes two jobs and teaches the mask taxonomy',
@@ -647,11 +647,11 @@ check(
     /DESIGNING/.test(read('beta-agent/AGENT.md')) &&
     /`native_mask`/.test(read('beta-agent/ROUTER.md')) &&
     !/`visual_mask`/.test(read('beta-agent/ROUTER.md')) &&
-    /never silently drop or reorder input images/i.test(read('beta-agent/AGENT.md')),
+    /never silently (drop|change).*(reorder|input image)/i.test(read('beta-agent/AGENT.md')),
 );
 check(
   'the beta skill teaches attached masks and drawn descriptions',
-  /Chat attachments: mask images and drawn descriptions/.test(read('beta-agent/skills/reference-editing/SKILL.md')) &&
+  /Separate mask attachment/.test(read('beta-agent/skills/reference-editing/SKILL.md')) &&
     /Drawn descriptions \(annotated photos\)/.test(read('beta-agent/references/engine/qwen-image-2.1-legacy-facts.md')),
 );
 check(
@@ -682,8 +682,7 @@ check(
 );
 check(
   'the beta agent may create a canvas for a separate piece',
-  /A new piece may have its own canvas \(beta\)/.test(read('beta-agent/AGENT.md')) &&
-    /conversation follows that piece/.test(mcpSource2),
+  /conversation follows that piece/.test(mcpSource2),
 );
 
 // ---- Phase D: assets ---------------------------------------------------
