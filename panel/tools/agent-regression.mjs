@@ -593,7 +593,7 @@ check(
   exists('beta-agent/templates/design-job.yaml') &&
     /name: design-pipeline/.test(read('beta-agent/manifest.yaml')) &&
     /required_for: \[designing\]/.test(read('beta-agent/manifest.yaml')) &&
-    /Load `design-pipeline` first/.test(read('beta-agent/ROUTER.md')),
+    /skills\/design-pipeline\/SKILL\.md/.test(read('beta-agent/ROUTER.md')),
 );
 
 // ---- V2 ticket 6: outcome evals -----------------------------------------
@@ -628,7 +628,7 @@ check(
 );
 check(
   'the router mandates loading the routed skill',
-  /Step 0 — mandatory read step/.test(read('beta-agent/ROUTER.md')) &&
+  /Step 0 .* Route and Load Knowledge/.test(read('beta-agent/ROUTER.md')) &&
     /skills\/design-pipeline\/SKILL\.md/.test(read('beta-agent/ROUTER.md')),
 );
 check(
