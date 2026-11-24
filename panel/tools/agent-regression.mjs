@@ -553,6 +553,17 @@ check(
   !/must name the "masked area"/.test(mcpSource2),
 );
 check(
+  'native-mask text removal must name exact characters and the exposed surface',
+  /Name the exact text being removed/.test(mcpSource2) &&
+    /not "the background surface"/.test(mcpSource2),
+);
+check(
+  'blind chat models cannot run generative image edits',
+  /EGGLAB_VISION: visionForModel/.test(read('service/chat.mjs')) &&
+    /const AGENT_VISION = process\.env\.EGGLAB_VISION !== 'false'/.test(mcpSource2) &&
+    /if \(!AGENT_VISION\) throw new Error\(BLIND_EDIT_ERROR\)/.test(mcpSource2),
+);
+check(
   'canvas-sized mask exports are cropped at the layer origin, not double-offset',
   /const sourceCanvas =/.test(httpSource2) &&
     /layerMask\([\s\S]{0,500}?sourceCanvas,/.test(httpSource2),
