@@ -169,6 +169,7 @@ There are two supported entry paths in the current EggLab workflow:
 2. Keep the original source layer as the active edit canvas. Do not make the mask layer the source image.
 3. Call `egl_photocraft_edit_active` with the exact `mask_layer` name. Use `mask_invert` only when the actual mask convention is inverted.
 4. The panel's native-mask path exports and aligns the mask to the canvas and uses the engine mask input. Do not also send that mask as a donor image.
+5. The tool result reports `maskLayer: "EggLab mask (B/W)"` — the canonical black/white mask it actually used (converted from the painted layer). For any follow-up edit on the same region, pass that name as `mask_layer` so the existing B/W mask is reused instead of rebuilt.
 5. Preserve the original layer as a backup and inspect the rendered result and boundary.
 
 ### B. Separate mask attachment

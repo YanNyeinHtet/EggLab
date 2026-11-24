@@ -523,6 +523,11 @@ async function editActive(body) {
     if (String(layer.name || '').toLowerCase() === name.toLowerCase()) {
       throw new Error('The mask layer must be a separate layer, not the active canvas.');
     }
+    // The canonical mask is already black/white and full-canvas: use it as-is.
+    // Re-converting it would build a second, redundant mask and report the
+    // wrong layer name to the agent.
+    const isCanonicalMask =
+      name.toLowerCase() === 'egglab mask (b/w)';
     const maskExport = await pc.exportLayerByName(name);
     if (!maskExport?.path || !maskExport.layer?.bounds) {
       throw new Error(`Mask layer "${name}" has no pixel bounds.`);
@@ -548,26 +553,28 @@ async function editActive(body) {
       TMP_DIR,
       `pc-user-mask-${stamp()}-${Math.random().toString(36).slice(2, 7)}.png`,
     );
-    layerMask(
-      maskExport.path,
-      maskFile,
-      size.width,
-      size.height,
-      maskOffset,
-      Boolean(body.maskInvert),
-      sourceCanvas,
-    );
-    try {
-      fs.appendFileSync(
-        path.join(LOG_DIR, 'main.log'),
-        `${new Date().toISOString()} mask-build layer=${name} ` +
-          `src=${maskExport.size?.width}x${maskExport.size?.height} ` +
-          `target=${size.width}x${size.height} canvas=${sourceCanvas} ` +
-          `offset=${maskOffset.join(',')}\n`,
+    if (!isCanonicalMask) {
+      layerMask(
+        maskExport.path,
+        maskFile,
+        size.width,
+        size.height,
+        maskOffset,
+        Boolean(body.maskInvert),
+        sourceCanvas,
       );
-    } catch {}
+      try {
+        fs.appendFileSync(
+          path.join(LOG_DIR, 'main.log'),
+          `${new Date().toISOString()} mask-build layer=${name} ` +
+            `src=${maskExport.size?.width}x${maskExport.size?.height} ` +
+            `target=${size.width}x${size.height} canvas=${sourceCanvas} ` +
+            `offset=${maskOffset.join(',')}\n`,
+        );
+      } catch {}
+    }
     local.initImg = exported.path;
-    local.mask = maskFile;
+    local.mask = isCanonicalMask ? maskExport.path : maskFile;
     local.strength = clamp(
       Number.isFinite(Number(body.strength)) ? Number(body.strength) : 0.4,
       0.05,
@@ -576,45 +583,77 @@ async function editActive(body) {
     if (Number.isFinite(Number(body.imgCfg))) local.imgCfg = Number(body.imgCfg);
     pasteBounds = layer.bounds;
     swapOriginal = true;
-    usedMaskLayer = name;
+    usedMaskLayer = 'EggLab mask (B/W)';
     // Auto-mask step (user paints a shape; the system makes the canonical
     // black/white mask and keeps it in the document so the conversion is
     // visible and reusable). The painted layer is hidden after the edit.
     // placeAtBounds returns copy metadata, not the new layer id, so identify
-    // the added layer by diffing the tree before/after.
-    try {
-      const beforeLayers = await pc.layers();
-      await pc.placeAtBounds(maskFile, [0, 0, size.width, size.height], {
-        name: 'EggLab mask (B/W)',
-      });
-      const afterLayers = await pc.layers();
-      const beforeIds = new Set((beforeLayers?.layers || []).map((l) => l.id));
-      const added =
-        (afterLayers?.layers || []).find(
-          (l) => !beforeIds.has(l.id) && l.name === 'EggLab mask (B/W)',
-        ) || (afterLayers?.layers || []).find((l) => !beforeIds.has(l.id));
-      let hidden = false;
-      if (added?.id !== undefined) {
-        autoMaskId = added.id;
-        await pc.command('layer.setProps', { layer: added.id, visible: false });
-        hidden = true;
+    // the added layer by diffing the tree before/after. Reuse an existing
+    // canonical layer's slot by removing stale copies first, so repeated edits
+    // do not pile up duplicate "EggLab mask (B/W)" layers.
+    if (!isCanonicalMask) {
+      try {
+        const existing = await pc.layers();
+        const flat = [];
+        const walk = (list) => {
+          for (const l of list || []) {
+            flat.push(l);
+            if (l.children) walk(l.children);
+          }
+        };
+        walk(existing?.layers || []);
+        for (const l of flat) {
+          if (String(l.name || '').toLowerCase() === 'egglab mask (b/w)') {
+            try { await pc.command('layer.delete', { layer: l.id }); } catch {}
+          }
+        }
+      } catch {}
+      try {
+        const beforeLayers = await pc.layers();
+        await pc.placeAtBounds(maskFile, [0, 0, size.width, size.height], {
+          name: 'EggLab mask (B/W)',
+        });
+        const afterLayers = await pc.layers();
+        const beforeIds = new Set((beforeLayers?.layers || []).map((l) => l.id));
+        const added =
+          (afterLayers?.layers || []).find(
+            (l) => !beforeIds.has(l.id) && l.name === 'EggLab mask (B/W)',
+          ) || (afterLayers?.layers || []).find((l) => !beforeIds.has(l.id));
+        let hidden = false;
+        if (added?.id !== undefined) {
+          autoMaskId = added.id;
+          await pc.command('layer.setProps', { layer: added.id, visible: false });
+          hidden = true;
+        }
+        try {
+          fs.appendFileSync(
+            path.join(LOG_DIR, 'main.log'),
+            `${new Date().toISOString()} auto-mask layer=${added?.id ?? 'none'} ` +
+              `hidden=${hidden} name=${added?.name || 'none'}\n`,
+          );
+        } catch {}
+        emit('log', `auto-mask: made EggLab mask (B/W) layer (hidden=${hidden})`);
+      } catch (err) {
+        try {
+          fs.appendFileSync(
+            path.join(LOG_DIR, 'main.log'),
+            `${new Date().toISOString()} auto-mask failed: ${err.message}\n`,
+          );
+        } catch {}
+        emit('log', `auto-mask placement failed (${err.message}); engine mask still applied`);
       }
+    } else {
+      // Canonical mask passed in: reuse it as the engine mask; no new layer.
+      autoMaskId = maskExport.layer?.id ?? null;
+      try {
+        await pc.command('layer.setProps', { layer: autoMaskId, visible: false });
+      } catch {}
       try {
         fs.appendFileSync(
           path.join(LOG_DIR, 'main.log'),
-          `${new Date().toISOString()} auto-mask layer=${added?.id ?? 'none'} ` +
-            `hidden=${hidden} name=${added?.name || 'none'}\n`,
+          `${new Date().toISOString()} auto-mask reused canonical layer=${autoMaskId}\n`,
         );
       } catch {}
-      emit('log', `auto-mask: made EggLab mask (B/W) layer (hidden=${hidden})`);
-    } catch (err) {
-      try {
-        fs.appendFileSync(
-          path.join(LOG_DIR, 'main.log'),
-          `${new Date().toISOString()} auto-mask failed: ${err.message}\n`,
-        );
-      } catch {}
-      emit('log', `auto-mask placement failed (${err.message}); engine mask still applied`);
     }
 
   } else if (Array.isArray(body.region) && body.region.length === 4) {
@@ -845,9 +884,7 @@ async function editActive(body) {
   try {
     const finalDoc = await pc.layers();
     const finalLayers = finalDoc?.layers || [];
-    const pick = (name) =>
-      finalLayers.find((l) => String(l.name || '').toLowerCase() === String(name).toLowerCase());
-    const auto = pick('EggLab mask (B/W)');
+    const auto = autoMaskId !== null ? finalLayers.find((l) => l.id === autoMaskId) : null;
     const original = layer?.id !== undefined ? finalLayers.find((l) => l.id === layer.id) : null;
     fs.appendFileSync(
       path.join(LOG_DIR, 'main.log'),
@@ -862,7 +899,8 @@ async function editActive(body) {
     job: done,
     region,
     mode: usedMaskLayer ? 'mask' : local.mask ? 'inpaint' : region ? 'crop' : 'full',
-    maskLayer: usedMaskLayer,
+    maskLayer: 'EggLab mask (B/W)',
+    maskSource: body.maskLayer || null,
     feather: feathered,
     mask: local.mask || null,
     alpha: done.alpha || null,
