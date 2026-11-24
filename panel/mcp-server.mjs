@@ -28,16 +28,6 @@ const KNOWLEDGE_FILES = new Set(['AGENT.md', 'ROUTER.md', 'manifest.yaml']);
 const KNOWLEDGE_DIRS = ['skills', 'references', 'templates', 'config', 'evals'];
 const KNOWLEDGE_MAX_BYTES = 512 * 1024;
 
-// The panel sets this from the selected chat model. Image edits are refused
-// rather than run blind: a text-only model cannot inspect the source, so any
-// mask/region prompt it writes is a guess.
-const AGENT_VISION = process.env.EGGLAB_VISION !== 'false';
-
-const BLIND_EDIT_ERROR =
-  'This chat model cannot see images, so a generative image edit would be a blind guess. ' +
-  'Switch the agent model to a vision-capable model (for example a VL/Gemini/Claude model) ' +
-  'in Settings, then retry. Do not render an edit you cannot inspect.';
-
 function readKnowledge(requested) {
   const rel = String(requested || '')
     .replace(/\\/g, '/')
@@ -884,14 +874,6 @@ async function callTool(name, args = {}) {
     }
 
     case 'edit': {
-      if (
-        !AGENT_VISION &&
-        (args.mask_image ||
-          args.use_active_layer ||
-          (Array.isArray(args.images) && args.images.length))
-      ) {
-        throw new Error(BLIND_EDIT_ERROR);
-      }
       let images = Array.isArray(args.images) ? args.images.slice() : [];
       let layer = null;
       if (args.use_active_layer) {
@@ -1072,7 +1054,6 @@ async function callTool(name, args = {}) {
       });
 
     case 'photocraft_edit_active': {
-      if (!AGENT_VISION) throw new Error(BLIND_EDIT_ERROR);
       // Mask intent is absolute: a painted mask layer is required, and a region
       // must not stand in for it. Then verify the layer exists before binding.
       if (/mask|masked/i.test(String(args.prompt || '')) && !args.mask_layer) {
@@ -1098,27 +1079,13 @@ async function callTool(name, args = {}) {
         // model invent content (measured: a cloud painted over removed text).
         const mp = String(args.prompt || '').trim();
         if (!mp) throw new Error('A mask edit needs a prompt: state the requested change, the exact exposed surface, and one keep clause.');
-        // Broad "remove the text" prompts made the model erase every title and
-        // hallucinate a replacement surface (measured: a mask around "3.0"
-        // produced a tiled face collage). Require the exact visible characters.
-        const removingText =
-          /\b(remove|erase|delete|clean|wipe|scrub)\b/i.test(mp) &&
-          /\b(text|lettering|word|words|caption|title|characters?|numerals?|digits?)\b/i.test(mp);
-        const removalClause =
-          (mp.match(/\b(remove|erase|delete|clean|wipe|scrub)\b[^.]{0,180}/i) || [''])[0];
-        if (
-          removingText &&
-          !/["“”'][^"“”']{1,80}["“”']|\b\d+(?:[.,]\d+)?\b/.test(removalClause)
-        ) {
-          throw new Error(
-            'Name the exact text being removed in the removal instruction — quote it, e.g. ' +
-              'Remove the "3.0" numerals. Do not write only "the text"; inspect the source and ' +
-              'state the visible characters.',
-          );
-        }
+        // A vague "background surface" made the model invent content. The
+        // surface must be named, or described as the surface immediately
+        // behind the removed content; the panel still composites through the
+        // B/W mask, so nothing outside the painted region survives.
         if (/\b(original\s+)?background\s+(surface|area)\b/i.test(mp)) {
           throw new Error(
-            'Name the exact exposed surface behind the removed content — skin, wall, sky, fabric — ' +
+            'Name the surface behind the removed content — skin, wall, sky, fabric — ' +
               'not "the background surface".',
           );
         }

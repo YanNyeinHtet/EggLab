@@ -291,10 +291,6 @@ export function buildWorkspace({ url, token, beta = false }) {
             // The beta toolset starts identical to the official one; beta
             // tool/behavior changes land behind this profile first.
             EGGLAB_TOOLSET: beta ? 'agent-beta' : 'agent',
-            // Capability is decided once, from the selected model. The MCP
-            // server uses this to refuse mask/region edits from a blind chat
-            // instead of letting the agent guess a prompt it cannot see.
-            EGGLAB_VISION: visionForModel(s.opencode.model, s) ? 'true' : 'false',
             ...(beta ? { EGGLAB_KNOWLEDGE_ROOT: String(knowledgeRoot).replace(/\\/g, '/') } : {}),
             // Image inspection reads only the panel's own render, scratch and
             // project folders; it never gets generic filesystem access.

@@ -107,12 +107,14 @@ encodePng(baseFile, bw, bh, baseData);
 const bwMaskFile = path.join(dir, 'bw-mask.png');
 encodePng(bwMaskFile, bw, bh, md);
 const guideFile = path.join(dir, 'guide.png');
-markMaskRegion(baseFile, bwMaskFile, guideFile, [255, 0, 0], 0.8);
+markMaskRegion(baseFile, bwMaskFile, guideFile, [255, 0, 0], 0.28, 3);
 const guide = decodePng(guideFile);
 const gAt = (x, y) => [...guide.data.subarray((y * bw + x) * 4, (y * bw + x) * 4 + 4)];
 const inside = gAt(10, 10);
+const edge = gAt(5, 10);
 const outside = gAt(0, 0);
-check('guide marks the editable region red', inside[0] > 190 && inside[1] < 40 && inside[2] < 20, JSON.stringify(inside));
+check('guide tints the editable region without hiding it', inside[0] > 60 && inside[0] < 110 && inside[1] > 60 && inside[1] < 110, JSON.stringify(inside));
+check('guide draws a red boundary', edge[0] > 240 && edge[1] < 10 && edge[2] < 10, JSON.stringify(edge));
 check('guide leaves protected pixels byte-identical', JSON.stringify(outside) === JSON.stringify([10, 120, 30, 255]), JSON.stringify(outside));
 check('guide stays opaque', inside[3] === 255);
 

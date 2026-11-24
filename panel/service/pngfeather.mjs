@@ -374,17 +374,26 @@ function resizeRgba(src, sw, sh, dw, dh) {
  * soft transition from a small mask blur.
  */
 /**
- * Paint the edit region onto a copy of the source as a coloured guide.
+ * Mark the edit region on a copy of the source as a light tint plus a thin
+ * outline.
  *
- * Qwen-Image-2.1 is an instruction-edit model, not an inpaint checkpoint. The
- * engine's `--init-img --mask` path only re-noises the canvas through a generic
- * denoise mask, so the mask protects pixels but gives the model no instruction
- * about *where* to put the requested object. Its trained local-edit path is a
- * reference image with the target area marked. This helper builds that guide;
- * the service still composites the result back through the real B/W mask, so
- * the mask remains the selector and nothing outside it can change.
+ * Qwen-Image-2.1 is an instruction-edit model, not an inpaint checkpoint. Its
+ * trained local-edit path is a reference image with the target area marked.
+ * A solid red fill hides the very content the model has to change: measured on
+ * a mask around the "3.0" title, an 80% fill made the render replace the text
+ * with a tiled face collage. A light tint keeps the glyphs/objects readable
+ * while still showing the region; the outline makes the boundary explicit.
+ * The service composites the result back through the real B/W mask, so the
+ * mask remains the selector and nothing outside it can change.
  */
-export function markMaskRegion(baseFile, maskFile, dstFile, color = [255, 0, 0], opacity = 0.8) {
+export function markMaskRegion(
+  baseFile,
+  maskFile,
+  dstFile,
+  color = [255, 0, 0],
+  tint = 0.28,
+  thickness = null,
+) {
   const base = decodePng(baseFile);
   const mask = decodePng(maskFile);
   const maskData =
@@ -392,15 +401,50 @@ export function markMaskRegion(baseFile, maskFile, dstFile, color = [255, 0, 0],
       ? mask.data
       : resizeRgba(mask.data, mask.width, mask.height, base.width, base.height);
   const [r, g, b] = color.map((v) => Math.max(0, Math.min(255, Math.round(Number(v) || 0))));
-  const strength = Math.max(0, Math.min(1, Number(opacity)));
+  const strength = Math.max(0, Math.min(1, Number(tint)));
+  const t = Number.isFinite(Number(thickness))
+    ? Math.max(0, Math.min(16, Math.round(Number(thickness))))
+    : Math.max(2, Math.round(Math.max(base.width, base.height) / 360));
+  const inside = new Uint8Array(base.width * base.height);
+  for (let i = 0, p = 0; i < inside.length; i++, p += 4) {
+    inside[i] = maskData[p] > 128 ? 1 : 0;
+  }
   const out = Buffer.from(base.data);
-  for (let i = 0, p = 0; i < base.width * base.height; i++, p += 4) {
-    const a = (maskData[p] / 255) * strength;
-    if (a <= 0.002) continue;
-    out[p] = Math.round(out[p] * (1 - a) + r * a);
-    out[p + 1] = Math.round(out[p + 1] * (1 - a) + g * a);
-    out[p + 2] = Math.round(out[p + 2] * (1 - a) + b * a);
-    out[p + 3] = Math.round(out[p + 3] * (1 - a) + 255 * a);
+  for (let y = 0; y < base.height; y++) {
+    for (let x = 0; x < base.width; x++) {
+      const i = y * base.width + x;
+      if (!inside[i]) continue;
+      const p = i * 4;
+      if (strength > 0) {
+        const a = (maskData[p] / 255) * strength;
+        out[p] = Math.round(out[p] * (1 - a) + r * a);
+        out[p + 1] = Math.round(out[p + 1] * (1 - a) + g * a);
+        out[p + 2] = Math.round(out[p + 2] * (1 - a) + b * a);
+        out[p + 3] = Math.round(out[p + 3] * (1 - a) + 255 * a);
+      }
+      if (t <= 0) continue;
+      let edge = false;
+      for (let dy = -t; dy <= t && !edge; dy++) {
+        const yy = y + dy;
+        if (yy < 0 || yy >= base.height) {
+          edge = true;
+          break;
+        }
+        for (let dx = -t; dx <= t; dx++) {
+          const xx = x + dx;
+          if (xx < 0 || xx >= base.width || !inside[yy * base.width + xx]) {
+            edge = true;
+            break;
+          }
+        }
+      }
+      if (edge) {
+        out[p] = r;
+        out[p + 1] = g;
+        out[p + 2] = b;
+        out[p + 3] = 255;
+      }
+    }
   }
   encodePng(dstFile, base.width, base.height, out);
   return { width: base.width, height: base.height };

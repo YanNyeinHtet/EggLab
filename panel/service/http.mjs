@@ -750,7 +750,7 @@ async function editActive(body) {
       `pc-mask-guide-${stamp()}-${Math.random().toString(36).slice(2, 7)}.png`,
     );
     try {
-      markMaskRegion(exported.path, maskForComposite, markedReference, [255, 0, 0], 0.8);
+      markMaskRegion(exported.path, maskForComposite, markedReference, [255, 0, 0], 0.28, 3);
       try {
         fs.appendFileSync(
           path.join(LOG_DIR, 'main.log'),
@@ -817,8 +817,9 @@ async function editActive(body) {
     promptForJob =
       `${basePrompt}\n\n` +
       `<image1> is the source canvas. <image${guideTag}> is the same canvas with the edit ` +
-      `region marked in red. Apply the requested change only inside the red-marked area of ` +
-      `<image${guideTag}> and match <image1> exactly everywhere else. The red mark is a ` +
+      `region marked by a light red tint and outline. Change only the pixels inside that ` +
+      `marked area of <image${guideTag}>; do not remove or alter any text, object or pixel ` +
+      `outside it. Match <image1> exactly everywhere outside the mark. The red mark is a ` +
       'location guide only and must not appear in the result.';
   }
   const job = engine.startJob({
