@@ -1517,10 +1517,28 @@ export async function send(text, files = [], refMap = {}) {
   }
   const firstRun = !bound.sessionId;
   const title = bound.title || message.split('\n')[0].slice(0, 48);
+  // Mentioned layers. A mask layer is a painted SELECTOR: never an image and
+  // never a reference. It is not attached, and it is named only as the
+  // mask_layer argument. Other layers are attached only for a vision model; a
+  // text-only model would otherwise receive "cannot read image" errors.
+  const vision = visionForModel(s.opencode.model, s);
+  const isSelector = (f) => /\bmask\b/i.test(String(refMap[f] || ''));
+  const sendFiles = cleanFiles.filter((f) => vision && !isSelector(f));
+  const mentionLines = cleanFiles.map((f) => {
+    const name = refMap[f] || '';
+    if (isSelector(f)) {
+      return `- @${name}: painted mask SELECTOR. Not an image and never a reference. Pass it only as mask_layer:"${name}" to egl_photocraft_edit_active.`;
+    }
+    if (/^canvas$/i.test(name)) {
+      return `- @canvas: flattened render of the whole current canvas${vision ? `: ${f}` : ' (not attached: this model cannot view images)'}.`;
+    }
+    if (!name) return `- ${f}`;
+    const where = vision ? `: ${f}` : ' (not attached: this model cannot view images)';
+    return `- @${name}: layer pixels${where}. Name it as source_layer:"${name}" when it is the layer to edit. Use it as an ordinary reference only when the user asks for it.`;
+  });
   const refNote = cleanFiles.length
-    ? `\n\nReference images (absolute paths, in order):\n${cleanFiles
-        .map((f, i) => `${i + 1}. ${refMap[f] ? `@${refMap[f]} — ` : ''}${f}`)
-        .join('\n')}\nUse these with egl_edit (images array) when the task is an edit. An entry marked @name is that PhotoCraft layer's pixels (a @-mention, in the order the user mentioned it); an entry marked @canvas is a flattened render of the whole current canvas.`
+    ? `\n\nMentioned layers (use these exact names in tool arguments):\n${mentionLines.join('\n')}\n` +
+      'Never put a mask selector in images, reference_images or any donor list.'
     : '';
   const agentMessage = message + refNote;
 
@@ -1571,7 +1589,7 @@ export async function send(text, files = [], refMap = {}) {
       // `message` and `--file` are both variadic in the CLI: the message must come
       // first, otherwise `--file` swallows it as another attachment path.
       args.push(agentMessage);
-      for (const file of cleanFiles) args.push('--file', file);
+      for (const file of sendFiles) args.push('--file', file);
 
       const child = spawn(oc.cmd, args, {
         cwd: agentDir,

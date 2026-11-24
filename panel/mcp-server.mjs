@@ -381,12 +381,12 @@ const tools = [
         mask_image: {
           type: 'string',
           description:
-            'Absolute path to a SEPARATE mask attachment (a blank layer painted with the PhotoCraft brush, exported as an image): white/alpha = edit, black/transparent = keep. Runs a true masked inpaint of init_image at strength. Never pass the mask as a visual donor; do not also add it to images.',
+            'Absolute path to a SEPARATE mask attachment (a painted layer exported as an image): white/alpha = edit, black/transparent = keep. The panel marks the edit area on a copy of init_image, Qwen edits that copy, and the render is composited back through the mask. The mask is a selector: never pass it in images or any donor list.',
         },
         strength: {
           type: 'number',
           description:
-            'Masked inpaint strength 0.05..1 (default 0.85). Replace/add/remove 0.75–0.95; recolour or retouch 0.4–0.6. Ignored without mask_image.',
+            'Strength 0.05..1, used only for mode:"inpaint" region edits (replace/add/remove 0.75–0.95; recolour or retouch 0.4–0.6). Painted mask edits are reference-guided and composited through the mask, so strength does not apply to them.',
         },
         workflow: { type: 'string', enum: ['quality', 'turbo'], description: 'Use the panel preset; quality for final/identity work, turbo for tests. Live steps/CFG come from egl_status.' },
         width: { type: 'integer', description: 'Pixels, multiple of 32; 256–2048 (service caps at 2048). Default: follow the source aspect, capped at 1024 long side.' },
@@ -533,7 +533,7 @@ const tools = [
   {
     name: 'photocraft_edit_active',
     description:
-      'Edit the layer selected in PhotoCraft: exports it, runs the edit, places the result back at the same bounds and hides the original. The active layer is the canvas. Three local sources: (1) region:[x,y,w,h] for a rectangle (mode crop/inpaint); (2) marks the user drew on the active photo - describe each mark and tell the model to remove the annotation; (3) mask_layer for a separate painted layer, where white/alpha = editable and black/transparent = keep, with mask_invert if the convention is reversed. For mask_layer the panel automatically converts the painted shape into a canonical black/white mask layer named "EggLab mask (B/W)" and uses it as the edit selector - you do not build the mask yourself. The result reports maskLayer as that canonical name; pass it back as mask_layer on a follow-up edit to reuse the same mask. The panel supplies the region guidance internally: the prompt must describe ONLY the requested change and its result state (never the whole scene, never the mask, its colour or pixels). For removals describe the replacement as the surface behind the removed content; never guess a material, colour or gradient, and never write only "the background". A region/mask edit must never come back with a visible rectangle; read all borders before reporting done. Never pass a mask layer as a donor reference; the panel rejects the painted mask and any image with the same selector shape.',
+      'Edit the layer named by source_layer (or the active layer) with a painted mask. mask_layer names the painted layer (white/alpha = edit, black/transparent = keep). The panel converts it to "EggLab mask (B/W)", marks the edit area on a copy of the source with a light red tint and outline, has Qwen edit that copy, and composites the render back through the B/W selector, so pixels outside the mark stay unchanged. The mask is a selector, never a reference: never put it in reference_images. Prompt: describe only the change and its result in the marked area, e.g. "Remove the text in the marked area and reconstruct the surface behind it, continuing its texture, colour and light. Keep everything else unchanged." Do not mention the mask or selection, do not write "all text" or "background surface", and do not invent a material or colour. Result: report references, verify (verify.outsideChangedPx must be 0; a near-zero verify.insideChangedPct means the edit did not take effect) and layers. State only what the result measured; do not claim you viewed the image unless you did.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -547,6 +547,11 @@ const tools = [
           type: 'string',
           description:
             'Name of a separate layer containing the user-painted mask. White/alpha = editable, black/transparent = keep. The active layer is the canvas. Use photocraft_layers to find the exact name. Do not pass the mask as a donor image.',
+        },
+        source_layer: {
+          type: 'string',
+          description:
+            'Exact name of the layer to edit (the canvas), from egl_photocraft_layers. Pass the original layer by name, e.g. "Layer 0". Do not rely on whichever layer is active, and do not use a previous result as the source unless the user asks to stack edits.',
         },
         mask_invert: {
           type: 'boolean',
@@ -748,6 +753,47 @@ const activeTools = agentProfile
   : tools;
 const activeToolNames = new Set(activeTools.map((tool) => tool.name));
 
+// Prompt gate for painted-mask edits. The panel marks the editable area for the
+// model, so the agent names the change, not the mask. Each rule is a failure seen
+// in a real job: "remove all text" was sent for a masked area, and "reconstruct
+// the background surface" made the model invent a gradient.
+function checkMaskPrompt(raw) {
+  const text = String(raw || '').trim();
+  if (!text) {
+    return 'A mask edit needs a prompt: state the change, the surface behind removed content, and one keep clause.';
+  }
+  if (/\b(mask|masks|masked|selection|selector)\b/i.test(text)) {
+    return 'Do not mention the mask or selection. Say "the marked area" (or "the text there") and describe only the change.';
+  }
+  if (/^(a|an|the)\s+(photo|photograph|poster|image|picture|painting|scene)\b/i.test(text)) {
+    return 'Start with the requested change. The source image is the scene, so do not open with a scene description.';
+  }
+  const scoped = /\b(marked|outlined|tinted)\s+(area|region|zone|part|spot)\b|\b(in|inside|within)\s+(this|the)\s+(area|region|spot)\b/i.test(text);
+  if (
+    !scoped &&
+    /\b(all|every|entire|whole)\b[^.;]{0,30}\b(text|lettering|words?|logos?|watermarks?|objects?|people|figures?|elements?|content|picture|image|scene)\b/i.test(text)
+  ) {
+    return 'The edit is limited to the marked area. Write "the text in the marked area", not "all text" or "the whole image".';
+  }
+  if (/\b(original\s+)?background\s+(surface|area|continuing|continues)\b/i.test(text)) {
+    return 'Do not write "background surface". Name the surface behind the removed content, continuing its texture, colour and light.';
+  }
+  const removal = /\b(remove|erase|delete|clean(?:\s+up)?|wipe|take out|get rid of)\b/i.test(text);
+  if (removal && !/\bbehind\b/i.test(text)) {
+    return 'For a removal, describe the replacement as "the surface behind it", continuing its texture, colour and light. Do not guess a material.';
+  }
+  if (
+    removal &&
+    /\b(reconstruct|restore|fill|recreate|rebuild|continue|extend|paint)\b[^.;]{0,80}\b(gradient|marble|granite|wood(?:en)?|brick|sky|wall|fabric|leather|metal(?:lic)?|concrete|grass|water|plain|solid|tiles?|stone|sand|glass|silk|velvet|blue|red|green|yellow|white|black|gold(?:en)?|silver|beige|cream|pink|purple|orange|brown|gr[ae]y|teal|navy)\b/i.test(text)
+  ) {
+    return 'Do not invent a material or colour for a removal. Use "the surface behind it, continuing its texture, colour and light".';
+  }
+  if (!/(stay|stays|remain|remains|unchanged|exactly as it is|preserve|keep)/i.test(text)) {
+    return 'Add one keep clause, e.g. "Keep everything else unchanged."';
+  }
+  return null;
+}
+
 async function callTool(name, args = {}) {
   if (!activeToolNames.has(name)) {
     throw new Error(`Tool ${name} is not available in this tool profile (${TOOL_PROFILE}).`);
@@ -771,7 +817,7 @@ async function callTool(name, args = {}) {
     ['edit', 'photocraft_edit_active'].includes(name)
   ) {
     throw new Error(
-      'Inspect the source before editing: call egl_inspect (or egl_photocraft_canvas) on the source image first. ' +
+      'Inspect the source before editing: call egl_inspect on the source image first. ' +
         'The whole-image description in a native_mask edit must come from the actual pixels — ' +
         'guessing the scene makes the render drift toward an invented image.',
     );
@@ -885,6 +931,10 @@ async function callTool(name, args = {}) {
       const initPath = args.init_image ? String(args.init_image) : maskPath ? images[0] : '';
       if (!images.length && !maskPath) throw new Error('egl_edit needs images, use_active_layer=true, or init_image + mask_image.');
       if (maskPath && !initPath) throw new Error('mask_image needs a target: pass init_image (or images[0]).');
+      if (maskPath) {
+        const gateError = checkMaskPrompt(args.prompt);
+        if (gateError) throw new Error(gateError);
+      }
       // Explicit edit contract. Derived when omitted so old callers keep working.
       const editMode =
         args.edit_mode ||
@@ -899,7 +949,9 @@ async function callTool(name, args = {}) {
       // Donors are never dropped. For native_mask the init canvas is already
       // the conditioning image; any OTHER images remain as donor references
       // (verified on this engine: -i + --mask + -r works and honours donors).
-      const donorImages = maskPath ? images.filter((p) => String(p) !== initPath) : images;
+      const donorImages = maskPath
+        ? images.filter((p) => String(p) !== initPath && String(p) !== maskPath)
+        : images;
       const { job } = await api('POST', '/api/jobs', {
     // Tags the job as agent-started: the panel refuses these when no chat
     // turn is active, so a tool call still in flight after Stop cannot render.
@@ -1072,50 +1124,15 @@ async function callTool(name, args = {}) {
               'Use egl_photocraft_layers for exact names.',
           );
         }
-        // Deterministic prompt-shape gate for native-mask edits. The source
-        // pixels carry the scene; the prompt states the operation, the exact
-        // exposed surface and one keep clause. Scene descriptions and generic
-        // "the background continuing" fills are rejected because they made the
-        // model invent content (measured: a cloud painted over removed text).
-        const mp = String(args.prompt || '').trim();
-        if (!mp) throw new Error('A mask edit needs a prompt: state the requested change, the exact exposed surface, and one keep clause.');
-        // A vague "background surface" made the model invent content. The
-        // surface must be named, or described as the surface immediately
-        // behind the removed content; the panel still composites through the
-        // B/W mask, so nothing outside the painted region survives.
-        if (/\b(original\s+)?background\s+(surface|area)\b/i.test(mp)) {
-          throw new Error(
-            'Name the surface behind the removed content — skin, wall, sky, fabric — ' +
-              'not "the background surface".',
-          );
-        }
-        // The text-only agent cannot see the surface it is asking the image
-        // model to rebuild. Guessing "gradient" or "skin" produces a plausible
-        // but wrong prompt. Make it use the source-grounded phrase instead.
-        const removingText =
-          /\b(remove|erase|delete|clean|wipe)\b/i.test(mp) &&
-          /\b(text|lettering|words?)\b/i.test(mp);
-        if (removingText && !/\bbehind\b/i.test(mp)) {
-          throw new Error(
-            'For a masked text removal, describe the replacement as the surface behind the removed ' +
-              'text. Do not guess a material, colour or gradient; the Qwen model can see the source pixels.',
-          );
-        }
-        if (/^(a|an|the)\s+(photo|photograph|poster|image|picture|painting|scene)\b/i.test(mp)) {
-          throw new Error('Native-mask prompt must not start with a scene description. Start with the requested change — the source image is the scene.');
-        }
-        if (/\bbackground\s+(continuing|continues)\b/i.test(mp)) {
-          throw new Error('Name the exact exposed surface from inspection instead of the generic word "background" — e.g. "plain light-blue sky", "flat white wall", "wooden desk". State that no new objects appear.');
-        }
-        if (!/(stay|stays|remain|remains|unchanged|exactly as it is|preserve)/i.test(mp)) {
-          throw new Error('Native-mask prompt needs one keep-the-rest clause, e.g. "The rest of the image stays exactly as it is."');
-        }
+        const gateError = checkMaskPrompt(args.prompt);
+        if (gateError) throw new Error(gateError);
       }
       return await api('POST', '/api/photocraft/edit-active', {
         prompt: args.prompt,
         region: args.region,
         maskLayer: args.mask_layer,
         maskInvert: args.mask_invert,
+        sourceLayer: args.source_layer,
         references: Array.isArray(args.reference_images) ? args.reference_images : undefined,
         mode: args.mode,
         feather: args.feather,

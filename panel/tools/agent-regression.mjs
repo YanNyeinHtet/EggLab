@@ -524,8 +524,10 @@ check(
 
 // ---- Phase 2: harness-enforced production loop -----------------------
 check(
-  'egl_edit supports attached mask images as a true inpaint',
-  /mask_image:/.test(mcpSource2) && /initImg: initPath/.test(mcpSource2) && /strength: Math\.min\(1/.test(mcpSource2),
+  'egl_edit never passes a mask as a donor and gates the mask prompt',
+  /const donorImages = maskPath\s+\?\s+images\.filter\(\(p\) => String\(p\) !== initPath && String\(p\) !== maskPath\)/.test(mcpSource2) &&
+    /checkMaskPrompt\(args\.prompt\)/.test(mcpSource2) &&
+    /images: donorImages/.test(mcpSource2),
 );
 check(
   'egl_edit carries an explicit edit contract and ordered roles',
@@ -533,63 +535,65 @@ check(
     /case 'edit': \{/.test(mcpSource2) && /const editMode =/.test(mcpSource2),
 );
 check(
-  'egl_edit never drops donor references with a mask',
-  /donorImages = maskPath \? images\.filter/.test(mcpSource2) && /images: donorImages/.test(mcpSource2) &&
-    !/images: maskPath \? \[\] : images/.test(mcpSource2),
-);
-check(
   'visual_mask is retired; masks use the native mask path',
   /visual_mask is retired/.test(mcpSource2) &&
     !/visual_mask = images\[0\] source/.test(mcpSource2),
 );
 check(
-  'native-mask prompts reject scene descriptions and generic background fills',
-  /Native-mask prompt must not start with a scene description/.test(mcpSource2) &&
-    /Name the exact exposed surface/.test(mcpSource2) &&
-    /Native-mask prompt needs one keep-the-rest clause/.test(mcpSource2),
+  'the mask prompt gate rejects the failures measured in real jobs',
+  /Do not mention the mask or selection/.test(mcpSource2) &&
+    /limited to the marked area/.test(mcpSource2) &&
+    /Do not write "background surface"/.test(mcpSource2) &&
+    /Do not invent a material or colour for a removal/.test(mcpSource2) &&
+    /Add one keep clause/.test(mcpSource2),
 );
 check(
-  'native-mask prompts do not require the agent to narrate the mask',
-  !/must name the "masked area"/.test(mcpSource2),
+  'a painted mask is a selector: the engine marks a copy and composites through it',
+  /prepareMaskedEdit\(/.test(read('service/engine.mjs')) &&
+    /finishMaskedEdit\(/.test(read('service/engine.mjs')) &&
+    /mode: 'marked-reference'/.test(read('service/engine.mjs')) &&
+    /MARK_TINT = 0\.28/.test(read('service/maskedjob.mjs')) &&
+    /sameMaskShape\(d, maskFile\)/.test(read('service/maskedjob.mjs')) &&
+    /local\.mask = maskForComposite/.test(httpSource2) &&
+    !/markMaskRegion\(exported\.path, maskForComposite/.test(httpSource2) &&
+    !/compositeMasked\(exported\.path, done\.outPath, maskForComposite/.test(httpSource2),
 );
 check(
-  'native-mask prompts reject vague background surfaces',
-  /Name the surface behind the removed content/.test(mcpSource2) &&
-    /not "the background surface"/.test(mcpSource2),
+  'the marked prompt tells Qwen which image is the canvas and which is the guide',
+  /<image1> is the source canvas/.test(read('service/maskedjob.mjs')) &&
+    /keep <image1> exactly unchanged everywhere outside it/.test(read('service/maskedjob.mjs')),
 );
 check(
-  'native-mask removals do not guess a material, colour or gradient',
-  /For a masked text removal, describe the replacement as the surface behind/.test(mcpSource2),
+  'source_layer is explicit: the edit does not depend on the active layer',
+  /source_layer: \{/.test(mcpSource2) && /sourceLayer: args\.source_layer/.test(mcpSource2) &&
+    /body\.sourceLayer/.test(httpSource2) &&
+    /did not become the active layer/.test(httpSource2),
 );
 check(
-  'a painted mask is rejected as a donor reference',
-  /Reference images include the painted mask/.test(httpSource2) &&
-    /sameMaskShape/.test(httpSource2),
+  'mask attachments are never images or donors in the agent message',
+  /painted mask SELECTOR/.test(read('service/chat.mjs')) &&
+    /const sendFiles = cleanFiles\.filter\(\(f\) => vision && !isSelector\(f\)\)/.test(read('service/chat.mjs')) &&
+    /for \(const file of sendFiles\) args\.push\('--file', file\)/.test(read('service/chat.mjs')) &&
+    !/Use these with egl_edit \(images array\)/.test(read('service/chat.mjs')),
 );
 check(
-  'the painted mask is hidden and the source stays selected',
-  /sourceMaskId/.test(httpSource2) &&
-    /hiddenMaskLayers/.test(httpSource2) &&
-    /await pc\.command\('layer\.select', \{ layer: layer\.id \}\)/.test(httpSource2),
+  'the result reports measured placement, visibility and verification',
+  /edit-final result=/.test(httpSource2) &&
+    /placement=/.test(httpSource2) &&
+    /layer\.select', \{ layer: autoMaskId \}/.test(httpSource2) &&
+    /selectorOpaque/.test(read('service/engine.mjs')) &&
+    /verify: done\.maskVerify/.test(httpSource2),
 );
 check(
-  'canvas-sized mask exports are cropped at the layer origin, not double-offset',
-  /const sourceCanvas =/.test(httpSource2) &&
-    /layerMask\([\s\S]{0,500}?sourceCanvas,/.test(httpSource2),
+  'beta references teach the verified masked path, not init image + mask',
+  /## Masked edits \(painted mask layer\)/.test(read('beta-agent/references/reference-editing/local-edit-and-seam-control.md')) &&
+    /outsideChangedPx/.test(read('beta-agent/references/reference-editing/local-edit-and-seam-control.md')) &&
+    /NOT init image \+ mask \+ strength/.test(read('beta-agent/references/engine/qwen-image-2.1-legacy-facts.md')) &&
+    !/Path 2 - pixel mask via init image/.test(read('beta-agent/references/engine/qwen-image-2.1-legacy-facts.md')),
 );
 check(
-  'painted-mask edits use a red guide and a B/W composite, not engine inpaint',
-  /maskForComposite/.test(httpSource2) &&
-    /markMaskRegion\(exported\.path, maskForComposite/.test(httpSource2) &&
-    /compositeMasked\(exported\.path, done\.outPath, maskForComposite/.test(httpSource2) &&
-    /<image1> is the source canvas/.test(httpSource2) &&
-    !/local\.mask = isCanonicalMask/.test(httpSource2),
-);
-check(
-  'active-layer edits accept ordered donor references',
-  /reference_images: \{/.test(mcpSource2) && /references: Array\.isArray\(args\.reference_images\)/.test(mcpSource2) &&
-    /maskedEdit[\s\S]{0,180}?markedReference/.test(httpSource2) &&
-    /inpaint\s*\?\s*donorRefs\s*:\s*\[source, \.\.\.donorRefs\]/.test(httpSource2),
+  'active-layer donors are never the source or the mask',
+  /\.filter\(\(p\) => p !== exported\.path\)/.test(httpSource2),
 );
 check(
   'active-layer donors are never the source or the mask',

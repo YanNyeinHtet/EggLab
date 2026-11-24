@@ -21,3 +21,20 @@ Name what may change and what must remain unchanged. Use a preservation clause r
 
 ## Iteration and provenance
 Keep original input untouched. Record source image, crop/selection, prompt, strength/settings, seed, model version and output. Review after each pass; do not chain many edits without checking drift. Prefer the strongest source and the fewest passes that solve the task.
+
+## Masked edits (painted mask layer)
+Qwen-Image-2.1 is an instruction-edit model. The engine's init-image + mask path does not inpaint with it (measured: the masked area was refilled with the surrounding fabric), so EggLab never sends a mask to the engine as a mask. The panel does this instead:
+1. converts the painted layer to "EggLab mask (B/W)" (white = editable, black = keep);
+2. marks the editable area on a copy of the source with a light red tint and outline. This is the method the model was trained on: paint the region, then name it in the prompt;
+3. sends [source, marked copy] to Qwen and composites the render back through the B/W selector, so pixels outside the mark stay byte-identical.
+
+Protocol:
+- Call `egl_photocraft_layers` first. Use exact names for `source_layer` (the original layer, e.g. "Layer 0") and `mask_layer` (e.g. "Mask").
+- Call `egl_photocraft_edit_active` with `source_layer`, `mask_layer` and `prompt`. Never put the painted layer, the B/W selector or any mask attachment in `reference_images`, `images` or any donor list.
+- Write the change only. Say "the marked area" when you need a location. Never mention the mask or selection, never write "all text" for a masked request, and never write "background surface".
+- Removal: "Remove the text in the marked area and reconstruct the surface behind it, continuing its texture, colour and light. Keep everything else unchanged."
+- Replacement: "Replace the object in the marked area with <new object>, matching perspective, light and shadows. Keep everything else unchanged."
+- If you cannot view images, do not invent a material, colour or gradient. "The surface behind it" lets the model read the source itself.
+- Read the returned `references`, `verify`, `selector` and `layers`. `verify.outsideChangedPx` must be 0. A `verify.insideChangedPct` near 0 means the edit did not take effect: change the prompt and do not report success.
+- Report only what the tool returned: which layers are visible, and what was measured inside and outside the mark. Claim a visual check only when you actually inspected the pixels.
+- Layer state after an edit: the original stays hidden as the backup; the result is the visible active layer; the B/W selector stays visible under the result when the result is fully opaque; the painted layer stays hidden.

@@ -1,7 +1,7 @@
 {
   "name": "egglab",
   "productName": "EggLab",
-  "version": "0.3.36",
+  "version": "0.3.37",
   "private": true,
   "description": "EggLab - Qwen-Image-2.1 agent panel for PhotoCraft",
   "author": "EggLab contributors",
@@ -12,7 +12,7 @@
     "dev": "electron . --dev",
     "dist": "electron-builder --win nsis",
     "dist:dir": "electron-builder --win dir",
-    "test:agent": "node tools/agent-regression.mjs && node tools/mcp-contract-test.mjs && node tools/mask-layer-test.mjs && node tools/region-composite-test.mjs && node tools/history-name-test.mjs && node tools/inspect-security-test.mjs && node tools/setup-regression.mjs && node tools/model-config-test.mjs && node tools/outcome-checks.mjs",
+    "test:agent": "node tools/agent-regression.mjs && node tools/mcp-contract-test.mjs && node tools/mcp-mask-gate-test.mjs && node tools/mask-layer-test.mjs && node tools/masked-job-test.mjs && node tools/region-composite-test.mjs && node tools/history-name-test.mjs && node tools/inspect-security-test.mjs && node tools/setup-regression.mjs && node tools/model-config-test.mjs && node tools/outcome-checks.mjs",
     "test:surface": "node tools/agent-surface-test.mjs",
     "test:live": "node tools/agent-live-eval.mjs",
     "test:setup": "node tools/setup-regression.mjs"

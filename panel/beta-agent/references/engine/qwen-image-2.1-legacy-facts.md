@@ -29,22 +29,19 @@ Prompt shape that works (measured):
 matching the lighting. Keep <the rest> exactly the same. Remove the red circle
 from the image and keep everything outside the circle unchanged.`
 - Name each mark's color/shape and its target; multi-mark maps are supported.
+- Official ComfyUI guidance: naming the mark's colour in the prompt points the edit at that region ("change the jacket in the red area"). Keep the mark inside the area you want changed. EggLab's panel marks masked areas this way; the prompt says "the marked area" and the panel supplies the colour.
 - This is the FIRST choice for "circle / drawn area" requests.
 
-### Path 2 — pixel mask via init image + strength (for painted masks, no visible annotation)
-Engine flags: `--init-img` + `--mask` + `--strength`. **Mask semantics
-(measured): WHITE area = repainted, BLACK area = kept.**
-- **Strength is the make-or-break knob (measured)**:
-  - 0.4 (the old default) — verified to leave the object almost unchanged. Too
-    weak for any real replacement. Do not use it for content changes.
-  - 0.75–0.95 — replace/add/remove an object or rewrite a feature.
-  - 0.4–0.6 — recolor, retouch, material/texture or lighting change.
-  - 0.25–0.35 — subtle skin/blemish/tonal pass only.
-- Prompt must describe the **final state of the masked area** ("the masked
-  area shows a small green potted fern…"), plus one preserve clause for the
-  unmasked content. The mask itself never appears in the output.
-- A full replacement wants high strength AND high quality preset; turbo is
-  acceptable for tests but check seams at native size.
+### Path 2 — painted mask (NOT init image + mask + strength)
+Do not use `--init-img` + `--mask` + `--strength` for Qwen-Image-2.1. Measured on
+this engine: the engine's denoise mask re-noised the masked area with no target
+instruction and refilled it with the surrounding fabric. The strength table that
+used to live here came from that broken path and is retired.
+Painted masks go through `egl_photocraft_edit_active` (`mask_layer`) or `egl_edit`
+(`init_image` + `mask_image`). The panel marks the area on a copy of the source
+(Path 1 method), Qwen edits that copy, and the render is composited back through
+the B/W selector, so pixels outside the mark stay unchanged. See
+`references/reference-editing/local-edit-and-seam-control.md`, "Masked edits".
 
 ### Path 3 — region crop edit (rectangle)
 Edits a tight crop and feathers it back. Use only for subjects that carry
@@ -73,12 +70,10 @@ openings, placements, camera angle), then describe materials, lighting and
 photorealism. Inspect against the sketch and fix named mismatches.
 
 ## Attached mask images (chat attachments)
-When the user attaches a mask file instead of using a PhotoCraft layer, the
-agent calls `egl_edit` with `init_image` (the photo) + `mask_image` (the mask)
-+ `strength`. Measured on this engine: white = repainted, black = kept; 0.9
-replaced an object cleanly, 0.4 left it almost unchanged. The mask is never a
-donor. This is the same latent-mask path as `photocraft_edit_active`'s
-`mask_layer`, just with files from the chat.
+A mask attachment is a selector, never an image: do not pass it in `images` or
+`reference_images`. Call `egl_edit` with `init_image` (the photo) and `mask_image`
+(the mask). The panel handles it exactly like a PhotoCraft `mask_layer`: marked
+copy, Qwen edit, composite through the mask. `strength` does not apply.
 
 ## Drawn descriptions (annotated photos)
 Circles, sketched areas and handwritten notes on an attached photo are the

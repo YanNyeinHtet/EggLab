@@ -6,6 +6,7 @@ import { emit } from './bus.mjs';
 import { engineConfig, getSettings, resolveModelPath, patchSettings, workflowParams } from './settings.mjs';
 import { alphaStats } from './imagecheck.mjs';
 import { decodePng } from './pngfeather.mjs';
+import { prepareMaskedEdit, composeMaskedPrompt, finishMaskedEdit } from './maskedjob.mjs';
 import { EGGLAB_PS1, LOG_DIR, OUT_DIR, TMP_DIR, clamp, readJson, round32, stamp, stripAnsi, uid } from './paths.mjs';
 
 const jobs = new Map();
@@ -196,6 +197,9 @@ function publicJob(job) {
     // How a local edit was actually driven (init image, mask, strength) — the
     // only proof from the outside that an inpaint was a real inpaint.
     localEdit: job.localEdit || null,
+    maskVerify: job.maskVerify || null,
+    selectorOpaque: job.selectorOpaque ?? null,
+    rawOutPath: job.rawOutPath || null,
     outPath: job.outPath || null,
     error: job.error || null,
     percent: job.status === 'queued' ? 0 : job.status === 'done' ? 100 : Math.min(95, Math.round((elapsed / job.expectedMs) * 100)),
@@ -374,11 +378,18 @@ export function startJob(input = {}) {
   const s = getSettings();
   const cfg = engineConfig();
   const params = workflowParams(input.workflow || s.workflow);
-  const kind = Array.isArray(input.images) && input.images.length ? 'edit' : 't2i';
+  // A painted mask is a selector: the job edits a marked copy of the source and
+  // the render is composited back through the mask (see maskedjob.mjs).
+  const masked = Boolean(input.initImg && input.mask);
+  const kind = masked || (Array.isArray(input.images) && input.images.length) ? 'edit' : 't2i';
   // Text-to-image honours the panel default; an edit only goes RGBA when the
   // caller asks for it explicitly, so a global "transparent" default can never
   // silently strip the background out of someone's photo.
-  const transparent = kind === 't2i' ? Boolean(input.transparent ?? s.transparent) : Boolean(input.transparent);
+  const transparent = masked
+    ? false
+    : kind === 't2i'
+      ? Boolean(input.transparent ?? s.transparent)
+      : Boolean(input.transparent);
 
   const problems = [];
   if (!fs.existsSync(path.join(cfg.engine, 'sd-cli.exe'))) problems.push('Engine missing — run install.ps1');
@@ -416,13 +427,27 @@ export function startJob(input = {}) {
           ? Number(s.seed)
           : Math.floor(Math.random() * 2147483647);
 
-  const images = (input.images || []).filter((p) => {
+  let images = (input.images || []).filter((p) => {
     try {
       return fs.existsSync(p);
     } catch {
       return false;
     }
   });
+  let maskedPrep = null;
+  if (masked) {
+    if (!fs.existsSync(input.initImg) || !fs.existsSync(input.mask)) {
+      throw new Error('The source image and the mask must both exist.');
+    }
+    maskedPrep = prepareMaskedEdit({
+      initImg: input.initImg,
+      mask: input.mask,
+      donors: images,
+      tmpDir: TMP_DIR,
+      tag: uid('mask'),
+    });
+    images = [input.initImg, ...maskedPrep.donors, maskedPrep.guideFile];
+  }
 
   // Size envelope for the generator: multiples of 32 (round32 floors at 256),
   // hard ceiling 2048 on the long side (8 GB VRAM; model curriculum tops at
@@ -455,7 +480,11 @@ export function startJob(input = {}) {
   // Scale references before the engine sees them (see prepareReferenceImages):
   // full-size photos from PhotoCraft exports otherwise blow up the edit graph.
   const preparedRefs = prepareReferenceImages(images, id);
-  const promptUsed = transparent ? transparentPrompt(prompt) : prompt;
+  const promptUsed = maskedPrep
+    ? composeMaskedPrompt(prompt, maskedPrep.donors.length)
+    : transparent
+      ? transparentPrompt(prompt)
+      : prompt;
   const promptFile = path.join(TMP_DIR, `${id}.prompt.txt`);
   fs.writeFileSync(promptFile, promptUsed, 'utf8');
 
@@ -487,6 +516,7 @@ export function startJob(input = {}) {
     seed,
     transparent,
     images,
+    maskedEdit: maskedPrep ? { initImg: input.initImg, mask: maskedPrep.maskFile } : null,
     outPath: null,
     error: null,
     startedAt: Date.now(),
@@ -573,11 +603,13 @@ if (Array.isArray(images) && images.length) {
     }
   };
   const localEdit = {};
-  if (input.initImg && fs.existsSync(input.initImg)) {
+  // Masked edits never send --init-img/--mask/--strength: Qwen is not an inpaint
+  // model for those flags. The record below says how the mask was used.
+  if (!maskedPrep && input.initImg && fs.existsSync(input.initImg)) {
     localEdit.initImg = input.initImg;
     args.push('-InitImg', input.initImg);
   }
-  if (input.mask && fs.existsSync(input.mask)) {
+  if (!maskedPrep && input.mask && fs.existsSync(input.mask)) {
     const initSize = input.initImg ? pngSizeQuick(input.initImg) : null;
     const maskSize = pngSizeQuick(input.mask);
     if (
@@ -615,14 +647,23 @@ if (Array.isArray(images) && images.length) {
     args.push('-Mask', input.mask);
   }
   const strength = Number(input.strength);
-  if (Number.isFinite(strength) && strength >= 0) {
+  if (!maskedPrep && Number.isFinite(strength) && strength >= 0) {
     localEdit.strength = strength;
     args.push('-Strength', String(strength));
   }
   const imgCfg = Number(input.imgCfg);
-  if (Number.isFinite(imgCfg) && imgCfg >= 0) {
+  if (!maskedPrep && Number.isFinite(imgCfg) && imgCfg >= 0) {
     localEdit.imgCfg = imgCfg;
     args.push('-ImgCfg', String(imgCfg));
+  }
+  if (maskedPrep) {
+    Object.assign(localEdit, {
+      mode: 'marked-reference',
+      initImg: input.initImg,
+      mask: maskedPrep.maskFile,
+      guide: maskedPrep.guideFile,
+      donors: maskedPrep.donors.length,
+    });
   }
   if (Object.keys(localEdit).length) job.localEdit = localEdit;
 
@@ -833,11 +874,32 @@ if (Array.isArray(images) && images.length) {
     lastFinishedModel = job.model || lastFinishedModel;
     job.child = null;
 
+    // A marked-reference edit is delivered only through its B/W selector: the
+    // raw render is kept beside it, and the measured check travels with the job.
+    let maskFailure = null;
+    if (!job.canceled && code === 0 && exists && job.maskedEdit) {
+      try {
+        const raw = path.join(TMP_DIR, path.basename(outPath).replace(/\.png$/i, '-raw.png'));
+        fs.renameSync(outPath, raw);
+        const fin = finishMaskedEdit({
+          initImg: job.maskedEdit.initImg,
+          maskFile: job.maskedEdit.mask,
+          rawOut: raw,
+          dstFile: outPath,
+        });
+        job.rawOutPath = raw;
+        job.maskVerify = fin.verify;
+        job.selectorOpaque = fin.opaque;
+      } catch (err) {
+        maskFailure = `The edit rendered, but compositing it through the painted mask failed: ${err.message}. Nothing was placed on the canvas.`;
+      }
+    }
+
     if (job.canceled) {
       job.status = 'canceled';
       job.phase = 'canceled';
       job.detail = 'Canceled';
-    } else if (code === 0 && exists) {
+    } else if (code === 0 && exists && !maskFailure) {
       job.status = 'done';
       job.phase = 'done';
       job.detail = 'Done';
@@ -864,7 +926,7 @@ if (Array.isArray(images) && images.length) {
       job.status = 'error';
       job.phase = 'error';
       const tail = job.logTail.slice(-6).join('\n');
-      job.error = job.error || (code === 0 ? 'Engine exited without writing the output file.' : `Engine failed (exit ${code}).`);
+      job.error = maskFailure || job.error || (code === 0 ? 'Engine exited without writing the output file.' : `Engine failed (exit ${code}).`);
       if (memoryFailure) {
         job.error = `The engine ran out of free VRAM after retrying. Close GPU-heavy apps/windows or switch to the turbo workflow and a smaller size.\n${job.error}`;
       }
@@ -880,6 +942,15 @@ if (Array.isArray(images) && images.length) {
     try {
       if (imageListFile) fs.unlinkSync(imageListFile);
     } catch {}
+    // Marked-reference temp files: the normalized selector and the guide.
+    if (job.maskedEdit) {
+      for (const file of [maskedPrep?.maskFile, maskedPrep?.guideFile]) {
+        if (!file) continue;
+        try {
+          fs.unlinkSync(file);
+        } catch {}
+      }
+    }
     // Reference copies made for this job (originals are never touched).
     for (const file of preparedRefs.temp) {
       try {

@@ -11,16 +11,7 @@ import * as sessions from './sessions.mjs';
 import * as setup from './setup.mjs';
 import * as updater from './updater.mjs';
 import { alphaStats, describeAlpha } from './imagecheck.mjs';
-import {
-  featherEdges,
-  regionMask,
-  layerMask,
-  compositePng,
-  compositeMasked,
-  decodePng,
-  markMaskRegion,
-  sameMaskShape,
-} from './pngfeather.mjs';
+import { featherEdges, regionMask, layerMask, compositePng } from './pngfeather.mjs';
 import { getSettings, patchSettings } from './settings.mjs';
 import { LOG_DIR, TMP_DIR, stamp, clamp } from './paths.mjs';
 import { emit } from './bus.mjs';
@@ -491,7 +482,23 @@ async function editActive(body) {
         `refs=${(body.references || []).length}\n`,
     );
   } catch {}
+  // The source is named explicitly when the caller gives it, so the edit never
+  // depends on whichever layer happened to be active (the source is often a
+  // hidden original, and the active layer is often the previous result).
+  if (body.sourceLayer) {
+    const wanted = String(body.sourceLayer).trim();
+    if (!wanted) throw new Error('source_layer must be a layer name.');
+    await pc.command('layer.select', { name: wanted });
+  }
   const exported = await pc.exportActiveLayer();
+  if (
+    body.sourceLayer &&
+    String(exported.layer?.name || '').toLowerCase() !== String(body.sourceLayer).trim().toLowerCase()
+  ) {
+    throw new Error(
+      `source_layer "${body.sourceLayer}" did not become the active layer (active: "${exported.layer?.name}").`,
+    );
+  }
   if (!exported?.path) throw new Error('No active layer to edit.');
   const layer = exported.layer;
   const size = pc.pngSize(exported.path);
@@ -518,23 +525,18 @@ async function editActive(body) {
   let swapOriginal = false; // result covers the whole layer, so hide the old one
   let usedMaskLayer = null;
   let autoMaskId = null;
-  // A painted mask is used twice: once as a coloured guide for Qwen's edit
-  // path, then as the hard selector for the final composite. It is not sent to
-  // the engine as `--mask` because Qwen-Image-2.1 is not an inpaint checkpoint.
+  // The B/W selector drives the edit (the engine marks it on a copy of the source
+  // and composites the render back through it). The user's painted layer is a
+  // source for the selector: it is never a donor and stays hidden.
   let maskForComposite = null;
-  let markedReference = null;
-  // The user's painted layer is a selector, never a donor. Keep its identity
-  // so it can be hidden after the edit (the canonical B/W copy is hidden too).
   let sourceMaskId = null;
   let sourceMaskName = null;
-  const maskSelectorPaths = [];
   const local = {};
 
   // A separately painted mask layer in PhotoCraft. The active layer is the
   // canvas; the named layer supplies the editable region. Qwen-Image-2.1 is an
-  // instruction-edit model, so the mask is shown to it as a red-marked copy of
-  // the canvas (its trained local-edit path) and then used to composite the
-  // render back over the original — no engine inpaint, no new UI.
+  // instruction-edit model, so the engine marks the region for it (its trained
+  // local-edit path) and composites the render back through the selector.
   if (body.maskLayer) {
     const name = String(body.maskLayer).trim();
     if (!name) throw new Error('mask_layer must be a layer name.');
@@ -594,9 +596,12 @@ async function editActive(body) {
       } catch {}
     }
     maskForComposite = isCanonicalMask ? maskExport.path : maskFile;
+    // The engine receives the source and the B/W selector; it builds the marked
+    // copy and composites the render back through the selector (maskedjob.mjs).
+    local.initImg = exported.path;
+    local.mask = maskForComposite;
     sourceMaskId = maskExport.layer?.id ?? null;
     sourceMaskName = name;
-    maskSelectorPaths.push(maskExport.path, maskExport.croppedPath, maskFile, maskForComposite);
     pasteBounds = layer.bounds;
     swapOriginal = true;
     usedMaskLayer = 'EggLab mask (B/W)';
@@ -722,64 +727,9 @@ async function editActive(body) {
     }
   }
 
-  // Build the guide Qwen is actually trained to follow: the source plus a copy
-  // of the same frame with the painted region marked in red. The marked copy is
-  // a reference, never the image that gets delivered; the B/W mask still
-  // decides which pixels the composite may take from the render.
-  if (maskForComposite) {
-    // Keep the guards the engine used to enforce: the mask must share the
-    // layer canvas and must not cover the whole frame (a failed build).
-    const layerSize = pc.pngSize(exported.path);
-    const maskSize = pc.pngSize(maskForComposite);
-    if (
-      layerSize?.width > 0 &&
-      maskSize?.width > 0 &&
-      (layerSize.width !== maskSize.width || layerSize.height !== maskSize.height)
-    ) {
-      throw new Error(
-        `Mask is ${maskSize.width}x${maskSize.height} but the active layer is ` +
-          `${layerSize.width}x${layerSize.height}. A mask must share the layer canvas. ` +
-          'Re-export the mask full-canvas or repaint it on this layer.',
-      );
-    }
-    try {
-      const mp = decodePng(maskForComposite);
-      let white = 0;
-      let total = 0;
-      for (let i = 0; i < mp.data.length; i += 16) {
-        total++;
-        if (mp.data[i] > 240) white++;
-      }
-      if (total > 0 && white / total > 0.98) {
-        throw new Error(
-          'The painted mask covers essentially the whole canvas (all-white). ' +
-            'Repaint the region you want changed, or use region mode for a full-frame edit.',
-        );
-      }
-    } catch (err) {
-      if (String(err.message || '').startsWith('The painted mask covers')) throw err;
-    }
-    markedReference = path.join(
-      TMP_DIR,
-      `pc-mask-guide-${stamp()}-${Math.random().toString(36).slice(2, 7)}.png`,
-    );
-    try {
-      markMaskRegion(exported.path, maskForComposite, markedReference, [255, 0, 0], 0.28, 3);
-      try {
-        fs.appendFileSync(
-          path.join(LOG_DIR, 'main.log'),
-          `${new Date().toISOString()} mask-guide file=${markedReference} ` +
-            `mask=${maskForComposite} color=red\n`,
-        );
-      } catch {}
-    } catch (err) {
-      throw new Error(`Could not build the mask guide from the painted mask: ${err.message}`);
-    }
-  }
-
   const sourceSize = pc.pngSize(source);
   const inpaint = Boolean(local.mask);
-  const maskedEdit = Boolean(maskForComposite && markedReference);
+  const maskedEdit = Boolean(maskForComposite);
   // A masked edit must follow the source layer's geometry. Falling back to the
   // panel's default square (960x960) stretches a portrait layer and ruins the
   // render — refuse instead of guessing.
@@ -814,66 +764,18 @@ async function editActive(body) {
   })();
 
   // Donor references (circles/paint plus e.g. a hat photo) follow the active
-  // layer in order. The source itself is the first reference — never listed
-  // twice. For a painted mask the last reference is the marked guide; the
-  // guide is appended so existing donor tags keep their positions.
-  const rawRefs = (Array.isArray(body.references) ? body.references : [])
+  // layer in order. The source is the canvas and is never listed twice. A
+  // painted mask is a selector: the engine refuses it if it arrives as a donor.
+  const donorRefs = (Array.isArray(body.references) ? body.references : [])
     .filter(Boolean)
-    .map(String);
-  // A mask is a selector, never a donor. The agent may have attached the
-  // painted layer from the chat (@Mask) instead of using mask_layer alone.
-  // Reject it before any GPU work: silently dropping it would teach the agent
-  // that the input was accepted, and the engine would receive a second copy of
-  // the selector as a visual reference.
-  if (maskedEdit) {
-    const selectorFiles = [...new Set(maskSelectorPaths)]
-      .filter((p) => p && fs.existsSync(p))
-      .map((p) => path.resolve(p).toLowerCase());
-    const forbidden = rawRefs.filter((p) => {
-      const abs = path.resolve(p).toLowerCase();
-      if (selectorFiles.includes(abs)) return true;
-      if (markedReference && abs === path.resolve(markedReference).toLowerCase()) return true;
-      for (const selector of selectorFiles) {
-        try {
-          if (sameMaskShape(p, selector)) return true;
-        } catch {}
-      }
-      return false;
-    });
-    if (forbidden.length) {
-      throw new Error(
-        'Reference images include the painted mask or its generated selector. A mask is never a donor: ' +
-          'remove it from reference_images and pass it only as mask_layer. The panel builds and composites ' +
-          'the selector itself.',
-      );
-    }
-  }
-  const donorRefs = rawRefs.filter((p) => p !== exported.path);
-  let promptForJob = body.prompt;
-  if (maskedEdit) {
-    const basePrompt = String(body.prompt || '').trim();
-    if (!basePrompt) {
-      throw new Error('A mask edit needs a prompt: state the requested change and one keep clause.');
-    }
-    const guideTag = donorRefs.length + 2; // <image1> is the source canvas
-    promptForJob =
-      `${basePrompt}\n\n` +
-      `<image1> is the source canvas. <image${guideTag}> is the same canvas with the edit ` +
-      `region marked by a light red tint and outline. Change only the pixels inside that ` +
-      `marked area of <image${guideTag}>; do not remove or alter any text, object or pixel ` +
-      `outside it. Match <image1> exactly everywhere outside the mark. The red mark is a ` +
-      'location guide only and must not appear in the result.';
-  }
+    .map(String)
+    .filter((p) => p !== exported.path);
   const job = engine.startJob({
     ...body,
     region: undefined,
-    prompt: promptForJob,
-    images: maskedEdit
-      ? [source, ...donorRefs, markedReference]
-      : inpaint
-        ? donorRefs
-        : [source, ...donorRefs],
-    ...(maskedEdit || inpaint ? { transparent: false } : {}),
+    prompt: body.prompt,
+    images: inpaint ? donorRefs : [source, ...donorRefs],
+    ...(inpaint ? { transparent: false } : {}),
     ...local,
     width: body.width || fitted.width || undefined,
     height: body.height || fitted.height || undefined,
@@ -889,45 +791,6 @@ async function editActive(body) {
   // a ramp that ate the middle would ghost two half-visible versions of the
   // subject instead of blending them.
   let output = done.outPath;
-  // Painted mask: the model edited a reference, so it may have touched pixels
-  // outside the painted area. Composite the render back through the B/W mask
-  // over the original layer — inside changes, outside stays byte-identical. A
-  // failure here must stop the edit: placing the raw reference render would
-  // silently break the mask guarantee.
-  if (maskedEdit && done.outPath && maskForComposite) {
-    const maskedFile = path.join(
-      TMP_DIR,
-      `pc-masked-${stamp()}-${Math.random().toString(36).slice(2, 7)}.png`,
-    );
-    try {
-      compositeMasked(exported.path, done.outPath, maskForComposite, maskedFile);
-      output = maskedFile;
-      pasteBounds = layer.bounds;
-      swapOriginal = true;
-    } catch (err) {
-      throw new Error(
-        `The edit rendered, but compositing it through the painted mask failed: ${err.message}. ` +
-          'Nothing was placed on the canvas.',
-      );
-    }
-  }
-  // Synthetic region inpaint: make the mask a real guarantee. The engine
-  // re-noises the whole canvas, so composite the render back through the mask
-  // over the original layer.
-  if (inpaint && done.outPath && local.initImg && local.mask) {
-    try {
-      const maskedFile = path.join(
-        TMP_DIR,
-        `pc-masked-${stamp()}-${Math.random().toString(36).slice(2, 7)}.png`,
-      );
-      compositeMasked(exported.path, done.outPath, local.mask, maskedFile);
-      output = maskedFile;
-      pasteBounds = layer.bounds;
-      swapOriginal = true;
-    } catch (err) {
-      emit('log', `masked composite failed (${err.message}); placing the raw inpaint`);
-    }
-  }
   let feathered = 0;
   if (local.feather > 0 && done.outPath) {
     try {
@@ -966,6 +829,13 @@ async function editActive(body) {
   const d = doc?.document || doc || {};
   const bounds = pasteBounds || layer?.bounds;
 
+  // The selector is the active layer while the result is placed, so the result
+  // lands directly above it: the B/W selector sits under the result, not over it.
+  if (autoMaskId !== null) {
+    try {
+      await pc.command('layer.select', { layer: autoMaskId });
+    } catch {}
+  }
   // The edited crop goes back exactly over the original: paste at its bounds
   // and let the panel scale the result to those pixels.
   const placed = bounds
@@ -995,59 +865,60 @@ async function editActive(body) {
     const placedId = placed?.layer?.id ?? placed?.id ?? placed?.result?.layer?.id ?? placed?.result?.id;
     if (placedId !== undefined) await pc.command('layer.select', { layer: placedId });
   } catch {}
-  // A mask is a selector, never artwork: hide it after use so the red/white
-  // paint cannot contaminate the visible canvas or any export.
-  if (usedMaskLayer) {
-    try {
-      const docNow = await pc.layers();
-      const flat = [];
-      const walk = (list) => {
-        for (const l of list || []) {
-          flat.push(l);
-          if (l.children) walk(l.children);
-        }
-      };
-      walk(docNow?.layers || docNow?.result?.layers || []);
-      const maskLayer = flat.find(
-        (l) => String(l.name || '').toLowerCase() === String(usedMaskLayer).toLowerCase(),
-      );
-      if (maskLayer) await pc.command('layer.setProps', { layer: maskLayer.id, visible: false });
-    } catch {}
-  }
-  // Final state enforcement. Placing the result opens a temporary document and
-  // copies it back; that step can re-show layers created earlier in the same
-  // run. Hide the original and the generated B/W mask once more, after every
-  // placement is finished, then record the real visibility for the transcript.
+  // Final state, by policy. The result is the visible artwork and the original
+  // stays hidden as the backup. The painted layer is a source and stays hidden.
+  // The B/W selector stays visible only when the result is fully opaque and sits
+  // under the result, so it can be inspected without covering the canvas.
+  const placedId = placed?.layer?.id ?? placed?.id ?? placed?.result?.layer?.id ?? placed?.result?.id;
+  let selectorVisible = false;
+  let selectorPlacement = null;
   try {
-    if (
-      body.replace !== false &&
-      layer?.id !== undefined &&
-      (!region || swapOriginal)
-    ) {
+    if (body.replace !== false && layer?.id !== undefined && (!region || swapOriginal)) {
       await pc.command('layer.setProps', { layer: layer.id, visible: false });
     }
-    if (autoMaskId !== null) {
-      await pc.command('layer.setProps', { layer: autoMaskId, visible: false });
-    }
-    // The painted layer is a selector too; hide it after the edit so it cannot
-    // read as visible artwork or as an input the engine used. The user can
-    // unhide it to paint the next region.
     if (sourceMaskId !== null && sourceMaskId !== autoMaskId) {
       await pc.command('layer.setProps', { layer: sourceMaskId, visible: false });
     }
+    if (autoMaskId !== null) {
+      selectorVisible = Boolean(maskedEdit && done.selectorOpaque);
+      await pc.command('layer.setProps', { layer: autoMaskId, visible: selectorVisible });
+    }
   } catch {}
+  let stack = [];
   try {
-    const finalDoc = await pc.layers();
-    const finalLayers = finalDoc?.layers || [];
-    const auto = autoMaskId !== null ? finalLayers.find((l) => l.id === autoMaskId) : null;
-    const sourceMask = sourceMaskId !== null ? finalLayers.find((l) => l.id === sourceMaskId) : null;
-    const original = layer?.id !== undefined ? finalLayers.find((l) => l.id === layer.id) : null;
+    const flat = [];
+    const walk = (list) => {
+      for (const l of list || []) {
+        flat.push(l);
+        if (l.children) walk(l.children);
+      }
+    };
+    walk((await pc.layers())?.layers || []);
+    stack = flat;
+    if (autoMaskId !== null && placedId !== undefined) {
+      const selectorAt = flat.findIndex((l) => l.id === autoMaskId);
+      const resultAt = flat.findIndex((l) => l.id === placedId);
+      if (selectorAt >= 0 && resultAt >= 0 && selectorAt < resultAt) {
+        if (selectorVisible) {
+          await pc.command('layer.setProps', { layer: autoMaskId, visible: false });
+        }
+        selectorVisible = false;
+        selectorPlacement = 'above-result';
+      } else {
+        selectorPlacement = 'under-result';
+      }
+    }
+  } catch {}
+  const stateOf = (id) => {
+    const l = stack.find((x) => x.id === id);
+    return l ? { id: l.id, name: l.name, visible: l.visible } : null;
+  };
+  try {
     fs.appendFileSync(
       path.join(LOG_DIR, 'main.log'),
-      `${new Date().toISOString()} edit-final autoMask=${auto ? `${auto.id}:${auto.visible}` : 'none'} ` +
-        `sourceMask=${sourceMask ? `${sourceMask.id}:${sourceMask.visible}` : 'none'} ` +
-        `original=${original ? `${original.id}:${original.visible}` : 'none'} ` +
-        `paintedMask=${usedMaskLayer || 'none'}\n`,
+      `${new Date().toISOString()} edit-final result=${placedId ?? 'none'} ` +
+        `selector=${autoMaskId ?? 'none'}:${selectorVisible} placement=${selectorPlacement || 'none'} ` +
+        `original=${layer?.id ?? 'none'} painted=${sourceMaskId ?? 'none'}\n`,
     );
   } catch {}
 
@@ -1055,20 +926,27 @@ async function editActive(body) {
     ok: true,
     job: done,
     region,
-    mode: usedMaskLayer ? 'mask' : local.mask ? 'inpaint' : region ? 'crop' : 'full',
-    maskLayer: 'EggLab mask (B/W)',
-    maskSource: body.maskLayer || null,
-    maskSourceLayer: sourceMaskName ? { id: sourceMaskId, name: sourceMaskName } : null,
-    maskSelector: maskedEdit ? { layer: 'EggLab mask (B/W)', usedAsReference: false } : null,
+    mode: maskedEdit ? 'mask' : local.mask ? 'inpaint' : region ? 'crop' : 'full',
+    source: layer ? { id: layer.id, name: layer.name } : null,
+    maskSource: sourceMaskName ? { layer: sourceMaskName, id: sourceMaskId, visible: stateOf(sourceMaskId)?.visible ?? false } : null,
+    selector: maskedEdit
+      ? { layer: 'EggLab mask (B/W)', id: autoMaskId, visible: selectorVisible, placement: selectorPlacement, state: stateOf(autoMaskId) }
+      : null,
+    references: [
+      ...(layer ? [{ role: 'source', layer: layer.name }] : []),
+      ...donorRefs.map((p) => ({ role: 'reference', path: p })),
+      ...(maskedEdit
+        ? [{ role: 'guide', derivedFrom: 'EggLab mask (B/W)', note: 'the source with the edit area marked in light red' }]
+        : []),
+    ],
+    promptUsed: done.promptUsed || null,
+    verify: done.maskVerify || null,
+    maskLayer: maskedEdit ? 'EggLab mask (B/W)' : null,
     feather: feathered,
     alpha: done.alpha || null,
     layer: layer ? { id: layer.id, name: layer.name, bounds: layer.bounds } : null,
     placed,
     hiddenOriginal: hidden,
-    hiddenMaskLayers: {
-      selector: autoMaskId,
-      painted: sourceMaskId !== autoMaskId ? sourceMaskId : null,
-    },
     output,
   };
 }
