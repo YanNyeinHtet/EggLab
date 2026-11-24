@@ -373,6 +373,39 @@ function resizeRgba(src, sw, sh, dw, dh) {
  * guarantee: inside = the new render, outside = the original pixels, with a
  * soft transition from a small mask blur.
  */
+/**
+ * Paint the edit region onto a copy of the source as a coloured guide.
+ *
+ * Qwen-Image-2.1 is an instruction-edit model, not an inpaint checkpoint. The
+ * engine's `--init-img --mask` path only re-noises the canvas through a generic
+ * denoise mask, so the mask protects pixels but gives the model no instruction
+ * about *where* to put the requested object. Its trained local-edit path is a
+ * reference image with the target area marked. This helper builds that guide;
+ * the service still composites the result back through the real B/W mask, so
+ * the mask remains the selector and nothing outside it can change.
+ */
+export function markMaskRegion(baseFile, maskFile, dstFile, color = [255, 0, 0], opacity = 0.8) {
+  const base = decodePng(baseFile);
+  const mask = decodePng(maskFile);
+  const maskData =
+    mask.width === base.width && mask.height === base.height
+      ? mask.data
+      : resizeRgba(mask.data, mask.width, mask.height, base.width, base.height);
+  const [r, g, b] = color.map((v) => Math.max(0, Math.min(255, Math.round(Number(v) || 0))));
+  const strength = Math.max(0, Math.min(1, Number(opacity)));
+  const out = Buffer.from(base.data);
+  for (let i = 0, p = 0; i < base.width * base.height; i++, p += 4) {
+    const a = (maskData[p] / 255) * strength;
+    if (a <= 0.002) continue;
+    out[p] = Math.round(out[p] * (1 - a) + r * a);
+    out[p + 1] = Math.round(out[p + 1] * (1 - a) + g * a);
+    out[p + 2] = Math.round(out[p + 2] * (1 - a) + b * a);
+    out[p + 3] = Math.round(out[p + 3] * (1 - a) + 255 * a);
+  }
+  encodePng(dstFile, base.width, base.height, out);
+  return { width: base.width, height: base.height };
+}
+
 export function compositeMasked(baseFile, patchFile, maskFile, dstFile) {
   const base = decodePng(baseFile);
   const patch = decodePng(patchFile);

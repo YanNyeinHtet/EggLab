@@ -549,14 +549,27 @@ check(
     /Native-mask prompt needs one keep-the-rest clause/.test(mcpSource2),
 );
 check(
+  'native-mask prompts do not require the agent to narrate the mask',
+  !/must name the "masked area"/.test(mcpSource2),
+);
+check(
   'canvas-sized mask exports are cropped at the layer origin, not double-offset',
   /const sourceCanvas =/.test(httpSource2) &&
     /layerMask\([\s\S]{0,500}?sourceCanvas,/.test(httpSource2),
 );
 check(
+  'painted-mask edits use a red guide and a B/W composite, not engine inpaint',
+  /maskForComposite/.test(httpSource2) &&
+    /markMaskRegion\(exported\.path, maskForComposite/.test(httpSource2) &&
+    /compositeMasked\(exported\.path, done\.outPath, maskForComposite/.test(httpSource2) &&
+    /<image1> is the source canvas/.test(httpSource2) &&
+    !/local\.mask = isCanonicalMask/.test(httpSource2),
+);
+check(
   'active-layer edits accept ordered donor references',
   /reference_images: \{/.test(mcpSource2) && /references: Array\.isArray\(args\.reference_images\)/.test(mcpSource2) &&
-    /images: inpaint \? donorRefs : \[source, \.\.\.donorRefs\]/.test(httpSource2),
+    /maskedEdit[\s\S]{0,180}?markedReference/.test(httpSource2) &&
+    /inpaint\s*\?\s*donorRefs\s*:\s*\[source, \.\.\.donorRefs\]/.test(httpSource2),
 );
 check(
   'active-layer donors are never the source or the mask',

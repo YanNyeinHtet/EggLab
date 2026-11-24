@@ -3,7 +3,13 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { decodePng, encodePng, layerMask } from '../service/pngfeather.mjs';
+import {
+  decodePng,
+  encodePng,
+  layerMask,
+  markMaskRegion,
+  compositeMasked,
+} from '../service/pngfeather.mjs';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'egglab-mask-'));
 const mask = path.join(dir, 'mask.png');
@@ -84,6 +90,48 @@ const cmAt = (x, y) => cmo.data[(y * 60 + x) * 4];
 check('full-canvas mask keeps document position', cmAt(5, 7) === 255, String(cmAt(5, 7)));
 check('full-canvas mask does not double-offset', cmAt(25, 17) === 0, String(cmAt(25, 17)));
 check('full-canvas mask outside stroke stays black', cmAt(0, 0) === 0);
+
+// The edit guide Qwen sees: the source with the editable region marked red.
+// The guide is a reference only; the B/W mask still composites the result.
+const bw = 40;
+const bh = 30;
+const baseData = Buffer.alloc(bw * bh * 4);
+for (let i = 0; i < baseData.length; i += 4) {
+  baseData[i] = 10;
+  baseData[i + 1] = 120;
+  baseData[i + 2] = 30;
+  baseData[i + 3] = 255;
+}
+const baseFile = path.join(dir, 'base.png');
+encodePng(baseFile, bw, bh, baseData);
+const bwMaskFile = path.join(dir, 'bw-mask.png');
+encodePng(bwMaskFile, bw, bh, md);
+const guideFile = path.join(dir, 'guide.png');
+markMaskRegion(baseFile, bwMaskFile, guideFile, [255, 0, 0], 0.8);
+const guide = decodePng(guideFile);
+const gAt = (x, y) => [...guide.data.subarray((y * bw + x) * 4, (y * bw + x) * 4 + 4)];
+const inside = gAt(10, 10);
+const outside = gAt(0, 0);
+check('guide marks the editable region red', inside[0] > 190 && inside[1] < 40 && inside[2] < 20, JSON.stringify(inside));
+check('guide leaves protected pixels byte-identical', JSON.stringify(outside) === JSON.stringify([10, 120, 30, 255]), JSON.stringify(outside));
+check('guide stays opaque', inside[3] === 255);
+
+// Final composite guarantee: the render may only land inside the B/W mask.
+const patchData = Buffer.alloc(bw * bh * 4);
+for (let i = 0; i < patchData.length; i += 4) {
+  patchData[i] = 20;
+  patchData[i + 1] = 20;
+  patchData[i + 2] = 200;
+  patchData[i + 3] = 255;
+}
+const patchFile = path.join(dir, 'patch.png');
+encodePng(patchFile, bw, bh, patchData);
+const compositeFile = path.join(dir, 'mask-composite.png');
+compositeMasked(baseFile, patchFile, bwMaskFile, compositeFile);
+const composite = decodePng(compositeFile);
+const cAt = (x, y) => [...composite.data.subarray((y * bw + x) * 4, (y * bw + x) * 4 + 4)];
+check('composite takes the render inside the mask', JSON.stringify(cAt(10, 10)) === JSON.stringify([20, 20, 200, 255]), JSON.stringify(cAt(10, 10)));
+check('composite preserves pixels outside the mask', JSON.stringify(cAt(0, 0)) === JSON.stringify([10, 120, 30, 255]), JSON.stringify(cAt(0, 0)));
 
 fs.rmSync(dir, { recursive: true, force: true });
 console.log(`\n${failures ? 'FAILED' : 'OK'} — ${failures} failure(s)`);

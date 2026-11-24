@@ -533,7 +533,7 @@ const tools = [
   {
     name: 'photocraft_edit_active',
     description:
-      'Edit the layer selected in PhotoCraft: exports it, runs the edit, places the result back at the same bounds and hides the original. The active layer is the canvas. Three local sources: (1) region:[x,y,w,h] for a rectangle (mode crop/inpaint); (2) marks the user drew on the active photo - describe each mark and tell the model to remove the annotation; (3) mask_layer for a separate painted layer, where white/alpha = editable and black/transparent = keep, with mask_invert if the convention is reversed. For mask_layer the panel automatically converts the painted shape into a canonical black/white mask layer named "EggLab mask (B/W)" and uses it for the engine - you do not build the mask yourself. The result reports maskLayer as that canonical name; pass it back as mask_layer on a follow-up edit to reuse the same mask. The prompt must describe ONLY the masked change and its result state (never the whole scene, never masks or colours). For removals name the exact exposed surface seen in the source (e.g. "plain light-blue sky") and say no new objects appear - never write only "the background". A region/mask edit must never come back with a visible rectangle; read all borders before reporting done. Never pass a mask layer as a donor reference.',
+      'Edit the layer selected in PhotoCraft: exports it, runs the edit, places the result back at the same bounds and hides the original. The active layer is the canvas. Three local sources: (1) region:[x,y,w,h] for a rectangle (mode crop/inpaint); (2) marks the user drew on the active photo - describe each mark and tell the model to remove the annotation; (3) mask_layer for a separate painted layer, where white/alpha = editable and black/transparent = keep, with mask_invert if the convention is reversed. For mask_layer the panel automatically converts the painted shape into a canonical black/white mask layer named "EggLab mask (B/W)" and uses it as the edit selector - you do not build the mask yourself. The result reports maskLayer as that canonical name; pass it back as mask_layer on a follow-up edit to reuse the same mask. The panel supplies the region guidance internally: the prompt must describe ONLY the requested change and its result state (never the whole scene, never the mask, its colour or pixels). For removals name the exact exposed surface seen in the source (e.g. "plain light-blue sky") and say no new objects appear - never write only "the background". A region/mask edit must never come back with a visible rectangle; read all borders before reporting done. Never pass a mask layer as a donor reference.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -571,7 +571,7 @@ const tools = [
         },
         strength: {
           type: 'number',
-          description: 'mode:"inpaint" or mask_layer - denoising strength 0.05..1 (default 0.4). Replace/add/remove 0.75-0.95; text/logo/watermark removal 0.9-0.95; recolour/retouch 0.25-0.6. Low preserves the source.',
+          description: 'mode:"inpaint" only - denoising strength 0.05..1 (default 0.4). Replace/add/remove 0.75-0.95; text/logo/watermark removal 0.9-0.95; recolour/retouch 0.25-0.6. Painted mask_layer edits are reference-guided and do not use strength.',
         },
         workflow: { type: 'string', enum: ['quality', 'turbo'] },
         steps: { type: 'integer' },
@@ -1078,12 +1078,9 @@ async function callTool(name, args = {}) {
         // "the background continuing" fills are rejected because they made the
         // model invent content (measured: a cloud painted over removed text).
         const mp = String(args.prompt || '').trim();
-        if (!mp) throw new Error('A mask edit needs a prompt: state the masked change, the exact exposed surface, and one keep clause.');
-        if (!/masked\s+(area|region|part|zone)/i.test(mp)) {
-          throw new Error('Native-mask prompt must name the "masked area" (or region). Do not describe the whole picture.');
-        }
+        if (!mp) throw new Error('A mask edit needs a prompt: state the requested change, the exact exposed surface, and one keep clause.');
         if (/^(a|an|the)\s+(photo|photograph|poster|image|picture|painting|scene)\b/i.test(mp)) {
-          throw new Error('Native-mask prompt must not start with a scene description. Start with "The masked area shows…" — the source image is the scene.');
+          throw new Error('Native-mask prompt must not start with a scene description. Start with the requested change — the source image is the scene.');
         }
         if (/\bbackground\s+(continuing|continues)\b/i.test(mp)) {
           throw new Error('Name the exact exposed surface from inspection instead of the generic word "background" — e.g. "plain light-blue sky", "flat white wall", "wooden desk". State that no new objects appear.');

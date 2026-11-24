@@ -11,7 +11,15 @@ import * as sessions from './sessions.mjs';
 import * as setup from './setup.mjs';
 import * as updater from './updater.mjs';
 import { alphaStats, describeAlpha } from './imagecheck.mjs';
-import { featherEdges, regionMask, layerMask, compositePng, compositeMasked } from './pngfeather.mjs';
+import {
+  featherEdges,
+  regionMask,
+  layerMask,
+  compositePng,
+  compositeMasked,
+  decodePng,
+  markMaskRegion,
+} from './pngfeather.mjs';
 import { getSettings, patchSettings } from './settings.mjs';
 import { LOG_DIR, TMP_DIR, stamp, clamp } from './paths.mjs';
 import { emit } from './bus.mjs';
@@ -509,12 +517,18 @@ async function editActive(body) {
   let swapOriginal = false; // result covers the whole layer, so hide the old one
   let usedMaskLayer = null;
   let autoMaskId = null;
+  // A painted mask is used twice: once as a coloured guide for Qwen's edit
+  // path, then as the hard selector for the final composite. It is not sent to
+  // the engine as `--mask` because Qwen-Image-2.1 is not an inpaint checkpoint.
+  let maskForComposite = null;
+  let markedReference = null;
   const local = {};
 
   // A separately painted mask layer in PhotoCraft. The active layer is the
-  // canvas; the named layer supplies the editable region. This is the
-  // user-painted equivalent of the synthetic regionMask below and uses the
-  // same engine path (--init-img --mask --strength), so no new UI is involved.
+  // canvas; the named layer supplies the editable region. Qwen-Image-2.1 is an
+  // instruction-edit model, so the mask is shown to it as a red-marked copy of
+  // the canvas (its trained local-edit path) and then used to composite the
+  // render back over the original — no engine inpaint, no new UI.
   if (body.maskLayer) {
     const name = String(body.maskLayer).trim();
     if (!name) throw new Error('mask_layer must be a layer name.');
@@ -573,14 +587,7 @@ async function editActive(body) {
         );
       } catch {}
     }
-    local.initImg = exported.path;
-    local.mask = isCanonicalMask ? maskExport.path : maskFile;
-    local.strength = clamp(
-      Number.isFinite(Number(body.strength)) ? Number(body.strength) : 0.4,
-      0.05,
-      1,
-    );
-    if (Number.isFinite(Number(body.imgCfg))) local.imgCfg = Number(body.imgCfg);
+    maskForComposite = isCanonicalMask ? maskExport.path : maskFile;
     pasteBounds = layer.bounds;
     swapOriginal = true;
     usedMaskLayer = 'EggLab mask (B/W)';
@@ -700,12 +707,70 @@ async function editActive(body) {
       local.feather = band;
     }
   }
+
+  // Build the guide Qwen is actually trained to follow: the source plus a copy
+  // of the same frame with the painted region marked in red. The marked copy is
+  // a reference, never the image that gets delivered; the B/W mask still
+  // decides which pixels the composite may take from the render.
+  if (maskForComposite) {
+    // Keep the guards the engine used to enforce: the mask must share the
+    // layer canvas and must not cover the whole frame (a failed build).
+    const layerSize = pc.pngSize(exported.path);
+    const maskSize = pc.pngSize(maskForComposite);
+    if (
+      layerSize?.width > 0 &&
+      maskSize?.width > 0 &&
+      (layerSize.width !== maskSize.width || layerSize.height !== maskSize.height)
+    ) {
+      throw new Error(
+        `Mask is ${maskSize.width}x${maskSize.height} but the active layer is ` +
+          `${layerSize.width}x${layerSize.height}. A mask must share the layer canvas. ` +
+          'Re-export the mask full-canvas or repaint it on this layer.',
+      );
+    }
+    try {
+      const mp = decodePng(maskForComposite);
+      let white = 0;
+      let total = 0;
+      for (let i = 0; i < mp.data.length; i += 16) {
+        total++;
+        if (mp.data[i] > 240) white++;
+      }
+      if (total > 0 && white / total > 0.98) {
+        throw new Error(
+          'The painted mask covers essentially the whole canvas (all-white). ' +
+            'Repaint the region you want changed, or use region mode for a full-frame edit.',
+        );
+      }
+    } catch (err) {
+      if (String(err.message || '').startsWith('The painted mask covers')) throw err;
+    }
+    markedReference = path.join(
+      TMP_DIR,
+      `pc-mask-guide-${stamp()}-${Math.random().toString(36).slice(2, 7)}.png`,
+    );
+    try {
+      markMaskRegion(exported.path, maskForComposite, markedReference, [255, 0, 0], 0.8);
+      try {
+        fs.appendFileSync(
+          path.join(LOG_DIR, 'main.log'),
+          `${new Date().toISOString()} mask-guide file=${markedReference} ` +
+            `mask=${maskForComposite} color=red\n`,
+        );
+      } catch {}
+    } catch (err) {
+      throw new Error(`Could not build the mask guide from the painted mask: ${err.message}`);
+    }
+  }
+
   const sourceSize = pc.pngSize(source);
   const inpaint = Boolean(local.mask);
-  // A masked inpaint must follow the source layer's geometry. Falling back to
-  // the panel's default square (960x960) stretches a portrait layer and ruins
-  // the render — refuse instead of guessing.
-  if (inpaint && !(Number(sourceSize?.width) > 0 && Number(sourceSize?.height) > 0)) {
+  const maskedEdit = Boolean(maskForComposite && markedReference);
+  // A masked edit must follow the source layer's geometry. Falling back to the
+  // panel's default square (960x960) stretches a portrait layer and ruins the
+  // render — refuse instead of guessing.
+  const geometryDriven = inpaint || maskedEdit;
+  if (geometryDriven && !(Number(sourceSize?.width) > 0 && Number(sourceSize?.height) > 0)) {
     throw new Error(
       'Could not read the active layer pixels for the masked edit (no size/aspect). ' +
         'Select the source layer again and retry — refusing to render at a default square size.',
@@ -729,24 +794,43 @@ async function editActive(body) {
     const w = Number(sourceSize?.width) || 0;
     const h = Number(sourceSize?.height) || 0;
     if (!(w > 0) || !(h > 0)) return {};
-    const cap = inpaint ? 1536 : 1024;
+    const cap = geometryDriven ? 1536 : 1024;
     const k = Math.min(1, cap / Math.max(w, h));
     return { width: Math.round(w * k), height: Math.round(h * k) };
   })();
 
   // Donor references (circles/paint plus e.g. a hat photo) follow the active
-  // layer in order. The engine path is verified: -i + --mask + -r honours
-  // donors (measured), so they are never dropped. The source itself is the
-  // init image / first reference — never listed twice.
+  // layer in order. The source itself is the first reference — never listed
+  // twice. For a painted mask the last reference is the red-marked guide; the
+  // guide is appended so existing donor tags keep their positions.
   const donorRefs = (Array.isArray(body.references) ? body.references : [])
     .filter(Boolean)
     .map(String)
     .filter((p) => p !== exported.path);
+  let promptForJob = body.prompt;
+  if (maskedEdit) {
+    const basePrompt = String(body.prompt || '').trim();
+    if (!basePrompt) {
+      throw new Error('A mask edit needs a prompt: state the requested change and one keep clause.');
+    }
+    const guideTag = donorRefs.length + 2; // <image1> is the source canvas
+    promptForJob =
+      `${basePrompt}\n\n` +
+      `<image1> is the source canvas. <image${guideTag}> is the same canvas with the edit ` +
+      `region marked in red. Apply the requested change only inside the red-marked area of ` +
+      `<image${guideTag}> and match <image1> exactly everywhere else. The red mark is a ` +
+      'location guide only and must not appear in the result.';
+  }
   const job = engine.startJob({
     ...body,
     region: undefined,
-    images: inpaint ? donorRefs : [source, ...donorRefs],
-    ...(inpaint ? { transparent: false } : {}),
+    prompt: promptForJob,
+    images: maskedEdit
+      ? [source, ...donorRefs, markedReference]
+      : inpaint
+        ? donorRefs
+        : [source, ...donorRefs],
+    ...(maskedEdit || inpaint ? { transparent: false } : {}),
     ...local,
     width: body.width || fitted.width || undefined,
     height: body.height || fitted.height || undefined,
@@ -762,9 +846,31 @@ async function editActive(body) {
   // a ramp that ate the middle would ghost two half-visible versions of the
   // subject instead of blending them.
   let output = done.outPath;
-  // Masked inpaint: make the mask a real guarantee. The engine re-noises the
-  // whole canvas, so composite the render back through the mask over the
-  // original layer — inside changes, outside stays byte-identical.
+  // Painted mask: the model edited a reference, so it may have touched pixels
+  // outside the painted area. Composite the render back through the B/W mask
+  // over the original layer — inside changes, outside stays byte-identical. A
+  // failure here must stop the edit: placing the raw reference render would
+  // silently break the mask guarantee.
+  if (maskedEdit && done.outPath && maskForComposite) {
+    const maskedFile = path.join(
+      TMP_DIR,
+      `pc-masked-${stamp()}-${Math.random().toString(36).slice(2, 7)}.png`,
+    );
+    try {
+      compositeMasked(exported.path, done.outPath, maskForComposite, maskedFile);
+      output = maskedFile;
+      pasteBounds = layer.bounds;
+      swapOriginal = true;
+    } catch (err) {
+      throw new Error(
+        `The edit rendered, but compositing it through the painted mask failed: ${err.message}. ` +
+          'Nothing was placed on the canvas.',
+      );
+    }
+  }
+  // Synthetic region inpaint: make the mask a real guarantee. The engine
+  // re-noises the whole canvas, so composite the render back through the mask
+  // over the original layer.
   if (inpaint && done.outPath && local.initImg && local.mask) {
     try {
       const maskedFile = path.join(
@@ -902,7 +1008,8 @@ async function editActive(body) {
     maskLayer: 'EggLab mask (B/W)',
     maskSource: body.maskLayer || null,
     feather: feathered,
-    mask: local.mask || null,
+    mask: maskForComposite || local.mask || null,
+    maskGuide: markedReference || null,
     alpha: done.alpha || null,
     layer: layer ? { id: layer.id, name: layer.name, bounds: layer.bounds } : null,
     placed,
