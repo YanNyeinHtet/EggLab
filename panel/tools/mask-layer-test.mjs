@@ -9,6 +9,7 @@ import {
   layerMask,
   markMaskRegion,
   compositeMasked,
+  sameMaskShape,
 } from '../service/pngfeather.mjs';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'egglab-mask-'));
@@ -134,6 +135,27 @@ const composite = decodePng(compositeFile);
 const cAt = (x, y) => [...composite.data.subarray((y * bw + x) * 4, (y * bw + x) * 4 + 4)];
 check('composite takes the render inside the mask', JSON.stringify(cAt(10, 10)) === JSON.stringify([20, 20, 200, 255]), JSON.stringify(cAt(10, 10)));
 check('composite preserves pixels outside the mask', JSON.stringify(cAt(0, 0)) === JSON.stringify([10, 120, 30, 255]), JSON.stringify(cAt(0, 0)));
+
+// A mask attachment is often an alpha cut-out while the engine selector is
+// black/white. The guard must compare the selector shape, not the colour.
+const alphaSameFile = path.join(dir, 'alpha-same.png');
+const alphaOtherFile = path.join(dir, 'alpha-other.png');
+const sameData = Buffer.alloc(bw * bh * 4);
+const otherData = Buffer.alloc(bw * bh * 4);
+for (let y = 0; y < bh; y++) {
+  for (let x = 0; x < bw; x++) {
+    const i = (y * bw + x) * 4;
+    sameData[i] = sameData[i + 1] = sameData[i + 2] = 255;
+    otherData[i] = otherData[i + 1] = otherData[i + 2] = 255;
+    sameData[i + 3] = otherData[i + 3] = 0;
+    if (x >= 5 && x < 15 && y >= 7 && y < 15) sameData[i + 3] = 255;
+    if (x >= 20 && x < 25 && y >= 10 && y < 15) otherData[i + 3] = 255;
+  }
+}
+encodePng(alphaSameFile, bw, bh, sameData);
+encodePng(alphaOtherFile, bw, bh, otherData);
+check('selector-shape guard matches B/W and alpha copies', sameMaskShape(bwMaskFile, alphaSameFile));
+check('selector-shape guard rejects a different mask', !sameMaskShape(bwMaskFile, alphaOtherFile));
 
 fs.rmSync(dir, { recursive: true, force: true });
 console.log(`\n${failures ? 'FAILED' : 'OK'} — ${failures} failure(s)`);

@@ -558,6 +558,21 @@ check(
     /not "the background surface"/.test(mcpSource2),
 );
 check(
+  'native-mask removals do not guess a material, colour or gradient',
+  /For a masked text removal, describe the replacement as the surface behind/.test(mcpSource2),
+);
+check(
+  'a painted mask is rejected as a donor reference',
+  /Reference images include the painted mask/.test(httpSource2) &&
+    /sameMaskShape/.test(httpSource2),
+);
+check(
+  'the painted mask is hidden and the source stays selected',
+  /sourceMaskId/.test(httpSource2) &&
+    /hiddenMaskLayers/.test(httpSource2) &&
+    /await pc\.command\('layer\.select', \{ layer: layer\.id \}\)/.test(httpSource2),
+);
+check(
   'canvas-sized mask exports are cropped at the layer origin, not double-offset',
   /const sourceCanvas =/.test(httpSource2) &&
     /layerMask\([\s\S]{0,500}?sourceCanvas,/.test(httpSource2),

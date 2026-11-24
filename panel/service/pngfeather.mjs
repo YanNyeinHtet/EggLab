@@ -450,6 +450,45 @@ export function markMaskRegion(
   return { width: base.width, height: base.height };
 }
 
+/**
+ * Compare two images by their selector shape (alpha or white-on-black mask),
+ * not by colour. Used to stop a painted mask from being passed as a donor
+ * reference: the chat attachment and the engine mask are different files but
+ * describe the same selector.
+ */
+export function sameMaskShape(aFile, bFile, tolerance = 0.02, samples = 256) {
+  const a = decodePng(aFile);
+  const b = decodePng(bFile);
+  const n = Math.max(32, Math.min(512, Math.round(Number(samples) || 256)));
+  const hasAlpha = (img) => {
+    for (let p = 3; p < img.data.length; p += 4) if (img.data[p] < 250) return true;
+    return false;
+  };
+  const alphaA = hasAlpha(a);
+  const alphaB = hasAlpha(b);
+  const selected = (img, alphaMode, x, y) => {
+    const p = (y * img.width + x) * 4;
+    if (alphaMode) return img.data[p + 3] > 128;
+    return img.data[p] > 240 && img.data[p + 1] > 240 && img.data[p + 2] > 240;
+  };
+  let inter = 0;
+  let union = 0;
+  for (let i = 0; i < n; i++) {
+    const ya = Math.min(a.height - 1, Math.floor(((i + 0.5) * a.height) / n));
+    const yb = Math.min(b.height - 1, Math.floor(((i + 0.5) * b.height) / n));
+    for (let j = 0; j < n; j++) {
+      const xa = Math.min(a.width - 1, Math.floor(((j + 0.5) * a.width) / n));
+      const xb = Math.min(b.width - 1, Math.floor(((j + 0.5) * b.width) / n));
+      const inA = selected(a, alphaA, xa, ya);
+      const inB = selected(b, alphaB, xb, yb);
+      if (inA && inB) inter++;
+      if (inA || inB) union++;
+    }
+  }
+  if (!union) return false;
+  return inter / union >= 1 - Math.max(0, Math.min(0.2, Number(tolerance) || 0));
+}
+
 export function compositeMasked(baseFile, patchFile, maskFile, dstFile) {
   const base = decodePng(baseFile);
   const patch = decodePng(patchFile);

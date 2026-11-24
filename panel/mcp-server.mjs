@@ -533,7 +533,7 @@ const tools = [
   {
     name: 'photocraft_edit_active',
     description:
-      'Edit the layer selected in PhotoCraft: exports it, runs the edit, places the result back at the same bounds and hides the original. The active layer is the canvas. Three local sources: (1) region:[x,y,w,h] for a rectangle (mode crop/inpaint); (2) marks the user drew on the active photo - describe each mark and tell the model to remove the annotation; (3) mask_layer for a separate painted layer, where white/alpha = editable and black/transparent = keep, with mask_invert if the convention is reversed. For mask_layer the panel automatically converts the painted shape into a canonical black/white mask layer named "EggLab mask (B/W)" and uses it as the edit selector - you do not build the mask yourself. The result reports maskLayer as that canonical name; pass it back as mask_layer on a follow-up edit to reuse the same mask. The panel supplies the region guidance internally: the prompt must describe ONLY the requested change and its result state (never the whole scene, never the mask, its colour or pixels). For removals name the exact exposed surface seen in the source (e.g. "plain light-blue sky") and say no new objects appear - never write only "the background". A region/mask edit must never come back with a visible rectangle; read all borders before reporting done. Never pass a mask layer as a donor reference.',
+      'Edit the layer selected in PhotoCraft: exports it, runs the edit, places the result back at the same bounds and hides the original. The active layer is the canvas. Three local sources: (1) region:[x,y,w,h] for a rectangle (mode crop/inpaint); (2) marks the user drew on the active photo - describe each mark and tell the model to remove the annotation; (3) mask_layer for a separate painted layer, where white/alpha = editable and black/transparent = keep, with mask_invert if the convention is reversed. For mask_layer the panel automatically converts the painted shape into a canonical black/white mask layer named "EggLab mask (B/W)" and uses it as the edit selector - you do not build the mask yourself. The result reports maskLayer as that canonical name; pass it back as mask_layer on a follow-up edit to reuse the same mask. The panel supplies the region guidance internally: the prompt must describe ONLY the requested change and its result state (never the whole scene, never the mask, its colour or pixels). For removals describe the replacement as the surface behind the removed content; never guess a material, colour or gradient, and never write only "the background". A region/mask edit must never come back with a visible rectangle; read all borders before reporting done. Never pass a mask layer as a donor reference; the panel rejects the painted mask and any image with the same selector shape.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -556,7 +556,7 @@ const tools = [
           type: 'array',
           items: { type: 'string' },
           description:
-            'Ordered donor images that follow the active layer (e.g. the hat photo when the user circles a girl). They are kept and passed to the engine after the source; the source itself is never listed twice. The mask layer is never a donor.',
+            'Ordered donor images that follow the active layer (e.g. the hat photo when the user circles a girl). They are kept and passed to the engine after the source; the source itself is never listed twice. The mask layer is never a donor; the panel rejects the painted mask and any image with the same selector shape.',
         },
         mode: {
           type: 'string',
@@ -1087,6 +1087,18 @@ async function callTool(name, args = {}) {
           throw new Error(
             'Name the surface behind the removed content — skin, wall, sky, fabric — ' +
               'not "the background surface".',
+          );
+        }
+        // The text-only agent cannot see the surface it is asking the image
+        // model to rebuild. Guessing "gradient" or "skin" produces a plausible
+        // but wrong prompt. Make it use the source-grounded phrase instead.
+        const removingText =
+          /\b(remove|erase|delete|clean|wipe)\b/i.test(mp) &&
+          /\b(text|lettering|words?)\b/i.test(mp);
+        if (removingText && !/\bbehind\b/i.test(mp)) {
+          throw new Error(
+            'For a masked text removal, describe the replacement as the surface behind the removed ' +
+              'text. Do not guess a material, colour or gradient; the Qwen model can see the source pixels.',
           );
         }
         if (/^(a|an|the)\s+(photo|photograph|poster|image|picture|painting|scene)\b/i.test(mp)) {
