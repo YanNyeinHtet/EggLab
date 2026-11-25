@@ -296,32 +296,10 @@ export async function layers() {
   const doc = await inspect();
   if (!doc) return { document: null, layers: [] };
   const d = doc.document || doc;
-  const canvas = { width: d.width, height: d.height };
-  // Mark every layer that extends past the canvas: its part outside cannot be
-  // selected or edited, so the agent must see this before it builds a mask.
-  const annotate = (list) =>
-    (list || []).map((l) => {
-      const off = offCanvasSides(l.bounds, canvas);
-      return {
-        ...l,
-        ...(off ? { offCanvas: off } : {}),
-        ...(l.children ? { children: annotate(l.children) } : {}),
-      };
-    });
-  const tree = annotate(doc.layers || []);
-  const warnings = flatLayers(tree)
-    .filter((l) => l.offCanvas)
-    .map(
-      (l) =>
-        `"${l.name}" extends past the canvas (${Object.entries(l.offCanvas)
-          .map(([side, px]) => `${px} px ${side}`)
-          .join(', ')}). A painted mask on it is refused until it lies fully on the canvas.`,
-    );
   return {
     document: { name: d.name, width: d.width, height: d.height },
     activeLayer: doc.activeLayer || null,
-    layers: tree,
-    ...(warnings.length ? { warnings } : {}),
+    layers: doc.layers || [],
   };
 }
 
@@ -971,7 +949,6 @@ export async function exportActiveLayer() {
  * Restores the previous selection/visibility afterward.
  */
 import { decodePng, encodePng } from './pngfeather.mjs';
-import { offCanvasSides, flatLayers } from './maskedjob.mjs';
 
 /**
  * Pad a cropped layer export back to full canvas at its document bounds.

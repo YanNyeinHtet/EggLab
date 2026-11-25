@@ -12,7 +12,6 @@ import * as setup from './setup.mjs';
 import * as updater from './updater.mjs';
 import { alphaStats, describeAlpha } from './imagecheck.mjs';
 import { featherEdges, regionMask, layerMask, compositePng } from './pngfeather.mjs';
-import { offCanvasSides, offCanvasMessage, sizeMismatch, newLayerId } from './maskedjob.mjs';
 import { getSettings, patchSettings } from './settings.mjs';
 import { LOG_DIR, TMP_DIR, stamp, clamp } from './paths.mjs';
 import { emit } from './bus.mjs';
@@ -565,19 +564,6 @@ async function editActive(body) {
     const docNow = await pc.inspect();
     const canvasW = Number(docNow?.document?.width || docNow?.width) || 0;
     const canvasH = Number(docNow?.document?.height || docNow?.height) || 0;
-    // Refuse before any work: a mask past the canvas edge loses that part in the
-    // canvas-sized selector, so the edit would not match the painted shape.
-    const offSides = offCanvasSides(maskExport.layer.bounds, { width: canvasW, height: canvasH });
-    if (offSides) {
-      throw new Error(offCanvasMessage(name, offSides, { width: canvasW, height: canvasH }));
-    }
-    if (sizeMismatch(maskExport.layer.bounds, maskExport.croppedSize)) {
-      throw new Error(
-        `The painted layer "${name}" has ${maskExport.croppedSize.width}x${maskExport.croppedSize.height} pixels ` +
-          `but reports bounds ${maskExport.layer.bounds.join(', ')}, so some of its pixels lie outside the reported area. ` +
-          'No edit was run. Move the stroke fully onto the canvas (or enlarge the canvas), then retry.',
-      );
-    }
     const sourceCanvas =
       Boolean(maskExport.croppedPath) ||
       (canvasW > 0 &&
@@ -852,21 +838,15 @@ async function editActive(body) {
   }
   // The edited crop goes back exactly over the original: paste at its bounds
   // and let the panel scale the result to those pixels.
-  const resultName = bounds
-    ? layer?.name
-      ? `${layer.name} (EggLab${region ? ' region' : ''})`
-      : 'EggLab edit'
-    : 'EggLab edit';
-  const layersBeforeResult = await pc.layers();
   const placed = bounds
-    ? await pc.placeAtBounds(output, bounds, { name: resultName })
+    ? await pc.placeAtBounds(output, bounds, {
+        name: layer?.name ? `${layer.name} (EggLab${region ? ' region' : ''})` : 'EggLab edit',
+      })
     : await pc.place(output, {
         fit: true,
         name: 'EggLab edit',
         center: [(d.width || 0) / 2, (d.height || 0) / 2],
       });
-  // The placement reply does not carry the new layer's id; take it from the tree.
-  const resultLayerId = newLayerId(layersBeforeResult, await pc.layers(), resultName);
 
   let hidden = null;
   // Inpaint results cover the whole layer, so leaving the original visible
@@ -882,13 +862,14 @@ async function editActive(body) {
   // Make the RESULT the active layer: exports, further edits and verification
   // must start from the composite, not from the hidden original.
   try {
-    if (resultLayerId !== null) await pc.command('layer.select', { layer: resultLayerId });
+    const placedId = placed?.layer?.id ?? placed?.id ?? placed?.result?.layer?.id ?? placed?.result?.id;
+    if (placedId !== undefined) await pc.command('layer.select', { layer: placedId });
   } catch {}
   // Final state, by policy. The result is the visible artwork and the original
   // stays hidden as the backup. The painted layer is a source and stays hidden.
   // The B/W selector stays visible only when the result is fully opaque and sits
   // under the result, so it can be inspected without covering the canvas.
-  const placedId = resultLayerId ?? undefined;
+  const placedId = placed?.layer?.id ?? placed?.id ?? placed?.result?.layer?.id ?? placed?.result?.id;
   let selectorVisible = false;
   let selectorPlacement = null;
   try {
