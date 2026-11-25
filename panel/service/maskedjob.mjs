@@ -24,6 +24,88 @@ const CHANGE_THRESHOLD = 8;
 const MIN_INSIDE_CHANGE_PCT = 0.5;
 const BLEND_RADIUS = 2;
 
+export function flatLayers(list, out = []) {
+  for (const l of list || []) {
+    out.push(l);
+    if (l.children) flatLayers(l.children, out);
+  }
+  return out;
+}
+
+// Build the B/W selector as a real canvas-sized layer, using PhotoCraft's own
+// selection commands instead of a clipboard export:
+//   painted layer transparency -> selection -> new layer -> black base ->
+//   fill the selection white.
+// A clipboard export of a painted layer is cropped at the canvas and carries the
+// layer's own bounds, so re-placing it can land the shape off by that offset and
+// can never contain pixels that lie past an edge. The selection path is bounded
+// by the canvas by construction, so the selector always matches the document.
+//
+// The black base is filled first on purpose: inverting a selection that covers
+// the whole canvas and filling again leaves the app with an empty layer, while
+// "select all -> black, then the painted transparency -> white" handles a
+// full-canvas mask as well as a small one.
+export async function buildMaskLayer(pc, {
+  maskLayerId,
+  maskLayerName,
+  sourceLayerId,
+  invert = false,
+  name = 'EggLab mask (B/W)',
+} = {}) {
+  // One canonical layer per document: remove stale copies first so repeated
+  // edits reuse the slot instead of piling up duplicates.
+  const existing = flatLayers((await pc.layers())?.layers || []);
+  for (const l of existing) {
+    if (String(l.name || '').toLowerCase() === name.toLowerCase()) {
+      try {
+        await pc.command('layer.delete', { layer: l.id });
+      } catch {}
+    }
+  }
+  // A deselect with no selection is refused, and a leftover selection would be
+  // replaced by the load below anyway.
+  try {
+    await pc.command('select.deselect');
+  } catch {}
+  await pc.command('layer.select', { layer: sourceLayerId });
+  const made = await pc.command('layer.new.layer', { name });
+  const layerId = made?.layer ?? null;
+  try {
+    // Base: black for a normal mask, white when the mask is inverted.
+    await pc.command('select.all');
+    await pc.command('edit.fill', { contents: invert ? 'white' : 'black' });
+    const loaded = await pc.command('select.loadSelection', {
+      channel: 'transparency',
+      layer: maskLayerId,
+      operation: 'new',
+    });
+    // An empty layer, or a stroke entirely past the canvas, reports
+    // selected:false. Filling then paints the whole canvas, so stop here.
+    if (!loaded?.selected) {
+      throw new Error(
+        `The painted layer "${maskLayerName}" has no pixels on the canvas, so it cannot select an edit area. ` +
+          'Paint inside the canvas and retry.',
+      );
+    }
+    await pc.command('edit.fill', { contents: invert ? 'black' : 'white' });
+  } catch (err) {
+    try {
+      await pc.command('select.deselect');
+    } catch {}
+    if (layerId !== null) {
+      try {
+        await pc.command('layer.delete', { layer: layerId });
+      } catch {}
+    }
+    throw err;
+  }
+  try {
+    await pc.command('select.deselect');
+  } catch {}
+  const layer = flatLayers((await pc.layers())?.layers || []).find((l) => l.id === layerId);
+  return { id: layerId, name, bounds: layer?.bounds || null };
+}
+
 export function pngHeaderSize(file) {
   const fd = fs.openSync(file, 'r');
   try {

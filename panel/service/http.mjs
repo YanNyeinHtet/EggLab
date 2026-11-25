@@ -12,6 +12,7 @@ import * as setup from './setup.mjs';
 import * as updater from './updater.mjs';
 import { alphaStats, describeAlpha } from './imagecheck.mjs';
 import { featherEdges, regionMask, layerMask, compositePng } from './pngfeather.mjs';
+import { buildMaskLayer, flatLayers } from './maskedjob.mjs';
 import { getSettings, patchSettings } from './settings.mjs';
 import { LOG_DIR, TMP_DIR, stamp, clamp } from './paths.mjs';
 import { emit } from './bus.mjs';
@@ -545,127 +546,71 @@ async function editActive(body) {
     if (String(layer.name || '').toLowerCase() === name.toLowerCase()) {
       throw new Error('The mask layer must be a separate layer, not the active canvas.');
     }
-    // The canonical mask is already black/white and full-canvas: use it as-is.
-    // Re-converting it would build a second, redundant mask and report the
-    // wrong layer name to the agent.
-    const isCanonicalMask =
-      name.toLowerCase() === 'egglab mask (b/w)';
-    const maskExport = await pc.exportLayerByName(name);
-    if (!maskExport?.path || !maskExport.layer?.bounds) {
-      throw new Error(`Mask layer "${name}" has no pixel bounds.`);
-    }
-    const [mx, my] = maskExport.layer.bounds;
-    const [lx, ly] = layer.bounds;
-    // exportLayerByName pads the clipboard export back to the full canvas at
-    // the layer's document bounds. A canvas-sized mask must be CROPPED at the
-    // target layer's origin, not shifted again by (mx-lx, my-ly) — that double
-    // offset repainted a different part of the picture while the painted area
-    // stayed untouched (measured: text stayed, the girl's arm gained a blob).
+    // A painted mask becomes the selector through PhotoCraft's own selection
+    // commands: the painted layer's transparency is the selection, a canvas-sized
+    // layer is filled black, and the selection is filled white. The selector is
+    // then exactly the document canvas, so it cannot be shifted by the painted
+    // layer's own bounds and it keeps the part of a stroke that lies past an edge.
+    const isCanonicalMask = name.toLowerCase() === 'egglab mask (b/w)';
     const docNow = await pc.inspect();
     const canvasW = Number(docNow?.document?.width || docNow?.width) || 0;
     const canvasH = Number(docNow?.document?.height || docNow?.height) || 0;
-    const sourceCanvas =
-      Boolean(maskExport.croppedPath) ||
-      (canvasW > 0 &&
-        canvasH > 0 &&
-        Number(maskExport.size?.width) === canvasW &&
-        Number(maskExport.size?.height) === canvasH);
-    const maskOffset = sourceCanvas ? [lx, ly] : [mx - lx, my - ly];
-    const maskFile = path.join(
-      TMP_DIR,
-      `pc-user-mask-${stamp()}-${Math.random().toString(36).slice(2, 7)}.png`,
-    );
+    const [lx, ly] = layer.bounds;
     if (!isCanonicalMask) {
-      layerMask(
-        maskExport.path,
-        maskFile,
-        size.width,
-        size.height,
-        maskOffset,
-        Boolean(body.maskInvert),
-        sourceCanvas,
+      const painted = flatLayers((await pc.layers())?.layers || []).find(
+        (l) => String(l.name || '').toLowerCase() === name.toLowerCase(),
       );
+      if (!painted || painted.id === undefined) {
+        throw new Error(`Mask layer "${name}" is not in this document.`);
+      }
+      if (!painted.bounds) throw new Error(`Mask layer "${name}" has no pixel bounds.`);
+      sourceMaskId = painted.id;
+      sourceMaskName = name;
+      const built = await buildMaskLayer(pc, {
+        maskLayerId: painted.id,
+        maskLayerName: painted.name || name,
+        sourceLayerId: layer.id,
+        invert: Boolean(body.maskInvert),
+      });
+      autoMaskId = built.id;
+      const bwExport = await pc.exportLayerByName('EggLab mask (B/W)');
+      if (!bwExport?.path) throw new Error('The B/W mask layer could not be exported.');
+      // The engine edits the source layer, so its mask must match that layer's
+      // pixels. The B/W layer is canvas-sized; crop it at the source's bounds
+      // only when the source is smaller than the canvas.
+      if (canvasW > 0 && canvasH > 0 && (size.width !== canvasW || size.height !== canvasH)) {
+        const maskFile = path.join(
+          TMP_DIR,
+          `pc-user-mask-${stamp()}-${Math.random().toString(36).slice(2, 7)}.png`,
+        );
+        layerMask(bwExport.path, maskFile, size.width, size.height, [lx, ly], false, true);
+        maskForComposite = maskFile;
+      } else {
+        maskForComposite = bwExport.path;
+      }
+      try {
+        await pc.command('layer.setProps', { layer: autoMaskId, visible: false });
+      } catch {}
       try {
         fs.appendFileSync(
           path.join(LOG_DIR, 'main.log'),
-          `${new Date().toISOString()} mask-build layer=${name} ` +
-            `src=${maskExport.size?.width}x${maskExport.size?.height} ` +
-            `target=${size.width}x${size.height} canvas=${sourceCanvas} ` +
-            `offset=${maskOffset.join(',')}\n`,
+          `${new Date().toISOString()} mask-build layer=${name} id=${autoMaskId ?? 'none'} ` +
+            `canvas=${canvasW}x${canvasH} target=${size.width}x${size.height} ` +
+            `selector=${bwExport.size?.width}x${bwExport.size?.height}\n`,
         );
       } catch {}
-    }
-    maskForComposite = isCanonicalMask ? maskExport.path : maskFile;
-    // The engine receives the source and the B/W selector; it builds the marked
-    // copy and composites the render back through the selector (maskedjob.mjs).
-    local.initImg = exported.path;
-    local.mask = maskForComposite;
-    sourceMaskId = maskExport.layer?.id ?? null;
-    sourceMaskName = name;
-    pasteBounds = layer.bounds;
-    swapOriginal = true;
-    usedMaskLayer = 'EggLab mask (B/W)';
-    // Auto-mask step (user paints a shape; the system makes the canonical
-    // black/white mask and keeps it in the document so the conversion is
-    // visible and reusable). The painted layer is hidden after the edit.
-    // placeAtBounds returns copy metadata, not the new layer id, so identify
-    // the added layer by diffing the tree before/after. Reuse an existing
-    // canonical layer's slot by removing stale copies first, so repeated edits
-    // do not pile up duplicate "EggLab mask (B/W)" layers.
-    if (!isCanonicalMask) {
-      try {
-        const existing = await pc.layers();
-        const flat = [];
-        const walk = (list) => {
-          for (const l of list || []) {
-            flat.push(l);
-            if (l.children) walk(l.children);
-          }
-        };
-        walk(existing?.layers || []);
-        for (const l of flat) {
-          if (String(l.name || '').toLowerCase() === 'egglab mask (b/w)') {
-            try { await pc.command('layer.delete', { layer: l.id }); } catch {}
-          }
-        }
-      } catch {}
-      try {
-        const beforeLayers = await pc.layers();
-        await pc.placeAtBounds(maskFile, [0, 0, size.width, size.height], {
-          name: 'EggLab mask (B/W)',
-        });
-        const afterLayers = await pc.layers();
-        const beforeIds = new Set((beforeLayers?.layers || []).map((l) => l.id));
-        const added =
-          (afterLayers?.layers || []).find(
-            (l) => !beforeIds.has(l.id) && l.name === 'EggLab mask (B/W)',
-          ) || (afterLayers?.layers || []).find((l) => !beforeIds.has(l.id));
-        let hidden = false;
-        if (added?.id !== undefined) {
-          autoMaskId = added.id;
-          await pc.command('layer.setProps', { layer: added.id, visible: false });
-          hidden = true;
-        }
-        try {
-          fs.appendFileSync(
-            path.join(LOG_DIR, 'main.log'),
-            `${new Date().toISOString()} auto-mask layer=${added?.id ?? 'none'} ` +
-              `hidden=${hidden} name=${added?.name || 'none'}\n`,
-          );
-        } catch {}
-        emit('log', `auto-mask: made EggLab mask (B/W) layer (hidden=${hidden})`);
-      } catch (err) {
-        try {
-          fs.appendFileSync(
-            path.join(LOG_DIR, 'main.log'),
-            `${new Date().toISOString()} auto-mask failed: ${err.message}\n`,
-          );
-        } catch {}
-        emit('log', `auto-mask placement failed (${err.message}); engine mask still applied`);
-      }
+      emit(
+        'log',
+        `auto-mask: built EggLab mask (B/W) from "${name}" by selection (${canvasW}x${canvasH})`,
+      );
     } else {
       // Canonical mask passed in: reuse it as the engine mask; no new layer.
-      autoMaskId = maskExport.layer?.id ?? null;
+      const maskExport = await pc.exportLayerByName(name);
+      if (!maskExport?.path) throw new Error(`Mask layer "${name}" could not be exported.`);
+      maskForComposite = maskExport.path;
+      sourceMaskId = maskExport.layer?.id ?? null;
+      sourceMaskName = name;
+      autoMaskId = sourceMaskId;
       try {
         await pc.command('layer.setProps', { layer: autoMaskId, visible: false });
       } catch {}
@@ -676,6 +621,13 @@ async function editActive(body) {
         );
       } catch {}
     }
+    // The engine receives the source and the B/W selector; it builds the marked
+    // copy and composites the render back through the selector (maskedjob.mjs).
+    local.initImg = exported.path;
+    local.mask = maskForComposite;
+    pasteBounds = layer.bounds;
+    swapOriginal = true;
+    usedMaskLayer = 'EggLab mask (B/W)';
     // Keep the editable source selected. The B/W copy is a hidden selector,
     // not the canvas the user should see active while the render runs.
     try {
@@ -859,17 +811,23 @@ async function editActive(body) {
       hidden = { error: err.message };
     }
   }
+  // placeAtBounds/place report the copied layer under `placed.layers`; the old
+  // lookups here never matched, so the result was never selected and the
+  // selector check below ran with undefined.
+  const placedId =
+    placed?.placed?.layers?.[0] ??
+    placed?.copied?.layers?.[0] ??
+    placed?.layer?.id ??
+    placed?.id;
   // Make the RESULT the active layer: exports, further edits and verification
   // must start from the composite, not from the hidden original.
   try {
-    const placedId = placed?.layer?.id ?? placed?.id ?? placed?.result?.layer?.id ?? placed?.result?.id;
     if (placedId !== undefined) await pc.command('layer.select', { layer: placedId });
   } catch {}
   // Final state, by policy. The result is the visible artwork and the original
   // stays hidden as the backup. The painted layer is a source and stays hidden.
   // The B/W selector stays visible only when the result is fully opaque and sits
   // under the result, so it can be inspected without covering the canvas.
-  const placedId = placed?.layer?.id ?? placed?.id ?? placed?.result?.layer?.id ?? placed?.result?.id;
   let selectorVisible = false;
   let selectorPlacement = null;
   try {
