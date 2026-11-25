@@ -441,7 +441,7 @@ const tools = [
   },
   {
     name: 'photocraft_layers',
-    description: 'Layer tree of the active document: ids, names, bounds, visibility, active layer. Use this to find a user-painted mask layer by name before photocraft_edit_active; the mask must be a separate layer from the canvas.',
+    description: 'Layer tree of the active document: ids, names, bounds, visibility, active layer. A layer marked offCanvas extends past the canvas edge; a painted mask on it is refused by photocraft_edit_active, so move the stroke fully onto the canvas first. Use this to find a user-painted mask layer by name before photocraft_edit_active; the mask must be a separate layer from the canvas.',
     inputSchema: { type: 'object', properties: {} },
   },
   {
@@ -533,7 +533,7 @@ const tools = [
   {
     name: 'photocraft_edit_active',
     description:
-      'Edit the layer named by source_layer (or the active layer) with a painted mask. mask_layer names the painted layer (white/alpha = edit, black/transparent = keep). The panel converts it to "EggLab mask (B/W)", marks the edit area on a copy of the source with a light red tint and outline, has Qwen edit that copy, and composites the render back through the B/W selector, so pixels outside the mark stay unchanged. The mask is a selector, never a reference: never put it in reference_images. Prompt: describe only the change and its result in the marked area, e.g. "Remove the text in the marked area and reconstruct the surface behind it, continuing its texture, colour and light. Keep everything else unchanged." Do not mention the mask or selection, do not write "all text" or "background surface", and do not invent a material or colour. Result: report references, verify (verify.outsideChangedPx must be 0; a near-zero verify.insideChangedPct means the edit did not take effect) and layers. State only what the result measured; do not claim you viewed the image unless you did.',
+      'Edit the layer named by source_layer (or the active layer) with a painted mask. mask_layer names the painted layer (white/alpha = edit, black/transparent = keep). The panel converts it to "EggLab mask (B/W)", marks the edit area on a copy of the source with a light red tint and outline, has Qwen edit that copy, and composites the render back through the B/W selector, so pixels outside the mark stay unchanged. The mask is a selector, never a reference: never put it in reference_images. Prompt: describe only the change and its result in the marked area, e.g. "Remove the text in the marked area and reconstruct the surface behind it, continuing its texture, colour and light. Keep everything else unchanged." Do not mention the mask or selection, do not write "all text" or "background surface", and do not invent a material or colour. Result: report references, verify (verify.outsideChangedPx must be 0; a near-zero verify.insideChangedPct means the edit did not take effect) and layers. A painted mask that extends past the canvas edge is refused with no edit run (see offCanvas in photocraft_layers): report the sides to the user and ask them to move the stroke onto the canvas or enlarge the canvas, then stop. Use only the object and details the user named in the prompt; do not add colours, logos or extra objects. State only what the result measured; do not claim you viewed the image unless you did, and do not call the look of the replacement "verified".',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1122,6 +1122,15 @@ async function callTool(name, args = {}) {
           throw new Error(
             `Mask layer "${args.mask_layer}" is not in this document. Layers: ${names.join(', ')}. ` +
               'Use egl_photocraft_layers for exact names.',
+          );
+        }
+        const hitLayer = (info?.layers || info?.result?.layers || []).find(
+          (l) => String(l.name || '').toLowerCase() === String(args.mask_layer).toLowerCase(),
+        );
+        if (hitLayer?.offCanvas) {
+          throw new Error(
+            `The painted layer "${args.mask_layer}" extends past the canvas (${JSON.stringify(hitLayer.offCanvas)}). ` +
+              'A painted mask past the canvas edge is refused: move the stroke fully onto the canvas (or enlarge the canvas), then retry. No edit was run.',
           );
         }
         const gateError = checkMaskPrompt(args.prompt);
