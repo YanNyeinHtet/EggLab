@@ -95,6 +95,7 @@ const check = (label, ok, detail = '') => {
 
 const KEEP = 'Keep everything else unchanged.';
 const REMOVE_OK = `Remove the text in the marked area and reconstruct the surface behind it, continuing its texture, colour and light. ${KEEP}`;
+const REMOVE_WITH_DONOR = `${REMOVE_OK} <image2> supplies the hat design only.`;
 
 try {
   await request('initialize', {
@@ -150,7 +151,7 @@ try {
   // egl_edit with a mask attachment: the mask is never a donor, and the gate applies.
   const beforeEdit = posts.length;
   const edit = await call('edit', {
-    prompt: REMOVE_OK,
+    prompt: REMOVE_WITH_DONOR,
     init_image: 'C:/a/source.png',
     mask_image: 'C:/a/mask.png',
     images: ['C:/a/donor.png', 'C:/a/mask.png'],
@@ -167,6 +168,58 @@ try {
     mask_image: 'C:/a/mask.png',
   });
   check('egl_edit applies the same prompt gate to a mask', badEdit.isError && badEdit.text.includes('limited to the marked area'), badEdit.text.slice(0, 100));
+
+  // Multi-image edits are positional: an untagged donor is refused before it
+  // reaches the panel, and image_roles is the supported alternative.
+  const beforeUntagged = posts.length;
+  const untagged = await call('edit', {
+    prompt: REMOVE_OK,
+    init_image: 'C:/a/source.png',
+    mask_image: 'C:/a/mask.png',
+    images: ['C:/a/donor.png'],
+  });
+  const untaggedSent = posts.slice(beforeUntagged).some((p) => p.path === '/api/jobs');
+  check(
+    'a donor without a tag is refused',
+    untagged.isError && untagged.text.includes('<image2>') && !untaggedSent,
+    untagged.text.slice(0, 120),
+  );
+
+  const beforeRoles = posts.length;
+  const roleEdit = await call('edit', {
+    prompt: REMOVE_OK,
+    init_image: 'C:/a/source.png',
+    mask_image: 'C:/a/mask.png',
+    images: ['C:/a/donor.png'],
+    image_roles: [{ index: 2, role: 'clothing_donor' }],
+  });
+  const rolePost = posts.slice(beforeRoles).find((p) => p.path === '/api/jobs');
+  check('image_roles lets an untagged donor through', !roleEdit.isError && Boolean(rolePost), roleEdit.text.slice(0, 100));
+  check('the role map is forwarded to the job', rolePost?.body?.imageRoles?.[2] === 'clothing_donor', JSON.stringify(rolePost?.body?.imageRoles));
+
+  const beforeActive = posts.length;
+  const activeUntagged = await call('photocraft_edit_active', {
+    prompt: `Add the hat in the marked area. ${KEEP}`,
+    mask_layer: 'Mask',
+    source_layer: 'Layer 0',
+    reference_images: ['C:/a/hat.png'],
+  });
+  const activeSent = posts.slice(beforeActive).some((p) => p.path === '/api/photocraft/edit-active');
+  check(
+    'edit_active rejects an untagged donor',
+    activeUntagged.isError && activeUntagged.text.includes('<image2>') && !activeSent,
+    activeUntagged.text.slice(0, 120),
+  );
+
+  const beforeActiveOk = posts.length;
+  const activeTagged = await call('photocraft_edit_active', {
+    prompt: `Add the hat from <image2> in the marked area. ${KEEP}`,
+    mask_layer: 'Mask',
+    source_layer: 'Layer 0',
+    reference_images: ['C:/a/hat.png'],
+  });
+  const activePost = posts.slice(beforeActiveOk).find((p) => p.path === '/api/photocraft/edit-active');
+  check('edit_active accepts a tagged donor', !activeTagged.isError && Boolean(activePost), activeTagged.text.slice(0, 100));
 } catch (err) {
   console.log(`FAIL  harness error — ${err.message}`);
   failures++;

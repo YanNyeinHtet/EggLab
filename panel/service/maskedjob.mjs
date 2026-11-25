@@ -185,17 +185,79 @@ export function prepareMaskedEdit({ initImg, mask, donors = [], tmpDir, tag }) {
 }
 
 // <image1> is the canvas; the marked copy is the last reference, after any donors.
-export function maskedPromptClause(donorCount) {
+// Donors are named too: Qwen-Image-2.1 needs an explicit role for every <imageN>
+// after the first, and a silent gap in the map is how "the reference image" gets
+// attached to the wrong input.
+const ROLE_WORDS = {
+  identity: 'identity',
+  product: 'product',
+  object_donor: 'object',
+  clothing_donor: 'clothing',
+  pose: 'pose',
+  style: 'style',
+  environment: 'environment',
+  lighting: 'lighting',
+  layout: 'layout',
+  sketch: 'sketch',
+  texture: 'texture',
+  material: 'material',
+};
+
+function roleWord(role) {
+  const key = String(role || '').trim().toLowerCase().replace(/\s+/g, '_');
+  if (ROLE_WORDS[key]) return ROLE_WORDS[key];
+  return key.replace(/_donor$/, '').replace(/_/g, ' ') || 'reference';
+}
+
+function taggedImages(text) {
+  const tags = new Set();
+  for (const m of String(text || '').matchAll(/<image(\d+)>/g)) tags.add(Number(m[1]));
+  return tags;
+}
+
+export function maskedPromptClause(donorCount, donorRoles = [], prompt = '') {
   const k = donorCount + 2;
+  const tagged = taggedImages(prompt);
+  const missing = [];
+  for (let i = 2; i < k; i++) if (!tagged.has(i)) missing.push(i);
+  let donorClause = '';
+  if (missing.length) {
+    const named = missing.every((i) => String(donorRoles[i - 2] || '').trim());
+    if (named) {
+      donorClause = missing
+        .map((i) => `<image${i}> supplies the ${roleWord(donorRoles[i - 2])} reference only.`)
+        .join(' ');
+    } else if (missing.length === 1) {
+      donorClause = `<image${missing[0]}> is the donor reference named in the instruction; use only the attributes the instruction asks for.`;
+    } else {
+      donorClause = `<image${missing[0]}-<image${missing[missing.length - 1]}> are the donor references named in the instruction; use only the attributes the instruction asks for from each.`;
+    }
+  }
   return (
-    `<image1> is the source canvas. <image${k}> is the same canvas with the edit area marked by a light red tint and outline. ` +
+    `<image1> is the source canvas. ` +
+    (donorClause ? `${donorClause} ` : '') +
+    `<image${k}> is the same canvas with the edit area marked by a light red tint and outline. ` +
     `Apply the requested change only inside that marked area of <image${k}>, and keep <image1> exactly unchanged everywhere outside it. ` +
     'The red tint and outline are location guides only and must not appear in the result.'
   );
 }
 
-export function composeMaskedPrompt(prompt, donorCount) {
-  return `${String(prompt || '').trim()}\n\n${maskedPromptClause(donorCount)}`;
+// The reference-edit counterpart: name every donor that the prompt left untagged.
+// Index 0 is unused; index 1 is <image1>, index N is <imageN>.
+export function referenceMapClause(roleMap, imageCount, prompt = '') {
+  const tagged = taggedImages(prompt);
+  const lines = [];
+  for (let i = 2; i <= imageCount; i++) {
+    if (tagged.has(i)) continue;
+    const role = String(roleMap?.[i] || '').trim();
+    if (!role) continue;
+    lines.push(`<image${i}> supplies the ${roleWord(role)} reference only.`);
+  }
+  return lines.join(' ');
+}
+
+export function composeMaskedPrompt(prompt, donorCount, donorRoles = []) {
+  return `${String(prompt || '').trim()}\n\n${maskedPromptClause(donorCount, donorRoles, prompt)}`;
 }
 
 export function isOpaque(file) {

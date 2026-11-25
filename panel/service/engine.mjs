@@ -6,7 +6,12 @@ import { emit } from './bus.mjs';
 import { engineConfig, getSettings, resolveModelPath, patchSettings, workflowParams } from './settings.mjs';
 import { alphaStats } from './imagecheck.mjs';
 import { decodePng } from './pngfeather.mjs';
-import { prepareMaskedEdit, composeMaskedPrompt, finishMaskedEdit } from './maskedjob.mjs';
+import {
+  prepareMaskedEdit,
+  composeMaskedPrompt,
+  referenceMapClause,
+  finishMaskedEdit,
+} from './maskedjob.mjs';
 import { EGGLAB_PS1, LOG_DIR, OUT_DIR, TMP_DIR, clamp, readJson, round32, stamp, stripAnsi, uid } from './paths.mjs';
 
 const jobs = new Map();
@@ -194,6 +199,7 @@ function publicJob(job) {
     transparent: job.transparent,
     alpha: job.alpha || null,
     images: job.images,
+    imageRoles: job.imageRoles || null,
     // How a local edit was actually driven (init image, mask, strength) — the
     // only proof from the outside that an inpaint was a real inpaint.
     localEdit: job.localEdit || null,
@@ -480,11 +486,23 @@ export function startJob(input = {}) {
   // Scale references before the engine sees them (see prepareReferenceImages):
   // full-size photos from PhotoCraft exports otherwise blow up the edit graph.
   const preparedRefs = prepareReferenceImages(images, id);
-  const promptUsed = maskedPrep
-    ? composeMaskedPrompt(prompt, maskedPrep.donors.length)
+  // Ordered role map: index 1 is <image1>, index N is <imageN>. The masked
+  // clause consumes the donor half; a plain reference edit gets any donor the
+  // prompt left untagged appended from the same map.
+  const imageRoles = Array.isArray(input.imageRoles) ? input.imageRoles : null;
+  let promptUsed = maskedPrep
+    ? composeMaskedPrompt(
+        prompt,
+        maskedPrep.donors.length,
+        imageRoles ? imageRoles.slice(1) : [],
+      )
     : transparent
       ? transparentPrompt(prompt)
       : prompt;
+  if (!maskedPrep && imageRoles) {
+    const mapClause = referenceMapClause(imageRoles, images.length, promptUsed);
+    if (mapClause) promptUsed = `${promptUsed}\n\n${mapClause}`;
+  }
   const promptFile = path.join(TMP_DIR, `${id}.prompt.txt`);
   fs.writeFileSync(promptFile, promptUsed, 'utf8');
 
@@ -516,6 +534,7 @@ export function startJob(input = {}) {
     seed,
     transparent,
     images,
+    imageRoles: imageRoles || null,
     maskedEdit: maskedPrep ? { initImg: input.initImg, mask: maskedPrep.maskFile } : null,
     outPath: null,
     error: null,

@@ -8,6 +8,7 @@ import {
   normalizeMask,
   prepareMaskedEdit,
   composeMaskedPrompt,
+  referenceMapClause,
   finishMaskedEdit,
   verifyMaskedEdit,
   isOpaque,
@@ -129,7 +130,18 @@ const p0 = composeMaskedPrompt('Remove the text in the marked area.', 0);
 check('no donors: guide is <image2>', p0.includes('<image2> is the same canvas') && !p0.includes('<image3>'));
 const p1 = composeMaskedPrompt('Add a hat in the marked area.', 1);
 check('one donor: guide is <image3>', p1.includes('<image3> is the same canvas') && p1.includes('keep <image1>'));
-check('the prompt never says mask or selection', !/mask|selection/i.test(p0 + p1));
+check('one donor: the donor is named too', p1.includes('<image2> is the donor reference'));
+const p1r = composeMaskedPrompt('Add a hat in the marked area.', 1, ['clothing_donor']);
+check('a donor role names the reference', p1r.includes('<image2> supplies the clothing reference only'));
+const p1t = composeMaskedPrompt('Add the hat from <image2> in the marked area.', 1);
+check('an already tagged donor is not repeated', !p1t.includes('<image2> is the donor reference'));
+check('the prompt never says mask or selection', !/mask|selection/i.test(p0 + p1 + p1r));
+
+// The reference-edit map names only donors the prompt left untagged.
+const rm = referenceMapClause([null, 'canvas', 'clothing_donor'], 2, 'Put the dress from the reference on the man.');
+check('reference map names an untagged donor', rm.includes('<image2> supplies the clothing reference only'));
+const rm2 = referenceMapClause([null, 'canvas', 'clothing_donor'], 2, 'Put the dress from <image2> on the man.');
+check('reference map skips a tagged donor', rm2 === '');
 
 // 4) Alpha-only selector (a cut-out brush layer) is read from its alpha.
 const alphaSel = path.join(dir, 'alpha-sel.png');

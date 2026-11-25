@@ -564,6 +564,18 @@ check(
     /keep <image1> exactly unchanged everywhere outside it/.test(read('service/maskedjob.mjs')),
 );
 check(
+  'the marked prompt names the donors between the canvas and the guide',
+  /is the donor reference named in the instruction/.test(read('service/maskedjob.mjs')) &&
+    /supplies the \$\{roleWord/.test(read('service/maskedjob.mjs')),
+);
+check(
+  'multi-image prompts must tag every donor or supply image_roles',
+  /function checkReferencePrompt/.test(mcpSource2) &&
+    /checkReferencePrompt\(\s*args\.prompt/.test(mcpSource2) &&
+    /normalizeImageRoles\(args\.image_roles/.test(mcpSource2) &&
+    /imageRoles: roleMap/.test(mcpSource2),
+);
+check(
   'source_layer is explicit: the edit does not depend on the active layer',
   /source_layer: \{/.test(mcpSource2) && /sourceLayer: args\.source_layer/.test(mcpSource2) &&
     /body\.sourceLayer/.test(httpSource2) &&

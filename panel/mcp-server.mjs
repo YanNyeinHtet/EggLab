@@ -349,7 +349,7 @@ const tools = [
   {
     name: 'edit',
     description:
-      'Edit one or more source images with Qwen-Image-2.1 (full-image instruction edit). (A) Change THIS picture: remove/replace/recolour/retouch/relight with a short imperative plus one blanket preserve clause. (B) A NEW picture of this subject: place the person/product into a designed scene, build a poster or campaign frame, and lock identity to the reference. Multi-reference: <image1> is the canvas whose framing survives, <image2>+ are donors; tag every input and state its role. One image: no tags. Use use_active_layer=true to edit the selected PhotoCraft layer. For a marked photo or a separately painted mask layer, prefer photocraft_edit_active (region or mask_layer) instead of this tool; never pass a mask layer as a donor reference. Set transparent=true for a cut-out.',
+      'Edit one or more source images with Qwen-Image-2.1 (full-image instruction edit). (A) Change THIS picture: remove/replace/recolour/retouch/relight with a short imperative plus one blanket preserve clause. (B) A NEW picture of this subject: place the person/product into a designed scene, build a poster or campaign frame, and lock identity to the reference. Multi-reference: <image1> is the canvas whose framing survives, <image2>+ are donors in call order; name every donor in the prompt (e.g. "<image2> supplies the dress design only") or pass image_roles, otherwise the call is rejected. One image: no tags. Use use_active_layer=true to edit the selected PhotoCraft layer. For a marked photo or a separately painted mask layer, prefer photocraft_edit_active (region or mask_layer) instead of this tool; never pass a mask layer as a donor reference. Set transparent=true for a cut-out.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -375,7 +375,8 @@ const tools = [
             },
             required: ['index', 'role'],
           },
-          description: 'Ordered role map for images; store it in egl_job_state. Input order is a contract — never reorder to match a prompt.',
+          description:
+            'Ordered role map for the final image order: index 1 is the canvas (the exported active layer when use_active_layer is true), 2..N are the donors in call order. The panel appends a missing donor tag to the prompt from this map; input order is a contract — never reorder to match a prompt. Store it in egl_job_state.',
         },
         init_image: { type: 'string', description: 'Absolute path to the image being changed. Only used with mask_image; defaults to images[0].' },
         mask_image: {
@@ -533,7 +534,7 @@ const tools = [
   {
     name: 'photocraft_edit_active',
     description:
-      'Edit the layer named by source_layer (or the active layer) with a painted mask. mask_layer names the painted layer (white/alpha = edit, black/transparent = keep). The panel converts it to "EggLab mask (B/W)", marks the edit area on a copy of the source with a light red tint and outline, has Qwen edit that copy, and composites the render back through the B/W selector, so pixels outside the mark stay unchanged. The mask is a selector, never a reference: never put it in reference_images. Prompt: describe only the change and its result in the marked area, e.g. "Remove the text in the marked area and reconstruct the surface behind it, continuing its texture, colour and light. Keep everything else unchanged." Do not mention the mask or selection, do not write "all text" or "background surface", and do not invent a material or colour. Result: report references, verify (verify.outsideChangedPx must be 0; a near-zero verify.insideChangedPct means the edit did not take effect) and layers. State only what the result measured; do not claim you viewed the image unless you did.',
+      'Edit the layer named by source_layer (or the active layer) with a painted mask. mask_layer names the painted layer (white/alpha = edit, black/transparent = keep). The panel converts it to "EggLab mask (B/W)", marks the edit area on a copy of the source with a light red tint and outline, has Qwen edit that copy, and composites the render back through the B/W selector, so pixels outside the mark stay unchanged. The mask is a selector, never a reference: never put it in reference_images. Prompt: describe only the change and its result in the marked area, e.g. "Remove the text in the marked area and reconstruct the surface behind it, continuing its texture, colour and light. Keep everything else unchanged." Do not mention the mask or selection, do not write "all text" or "background surface", and do not invent a material or colour. With reference_images, name each donor in the prompt: <image1> is the source layer, <image2>–<imageN> follow reference_images order, and the panel appends the marked copy last as <imageN+1> — do not tag it. An untagged donor is rejected unless image_roles is passed. Result: report references, verify (verify.outsideChangedPx must be 0; a near-zero verify.insideChangedPct means the edit did not take effect) and layers. State only what the result measured; do not claim you viewed the image unless you did.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -562,6 +563,25 @@ const tools = [
           items: { type: 'string' },
           description:
             'Ordered donor images that follow the active layer (e.g. the hat photo when the user circles a girl). They are kept and passed to the engine after the source; the source itself is never listed twice. The mask layer is never a donor; the panel rejects the painted mask and any image with the same selector shape.',
+        },
+        image_roles: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              index: {
+                type: 'integer',
+                description: '1-based position: 1 is the source layer, 2..N are reference_images in order.',
+              },
+              role: {
+                type: 'string',
+                description: 'identity | product | object_donor | clothing_donor | pose | style | environment | lighting | layout | sketch | texture | material',
+              },
+            },
+            required: ['index', 'role'],
+          },
+          description:
+            'Ordered role map for the source layer and reference_images. The panel names untagged donors in the prompt from it; the marked copy is appended after them and is never indexed here.',
         },
         mode: {
           type: 'string',
@@ -794,6 +814,55 @@ function checkMaskPrompt(raw) {
   return null;
 }
 
+// Multi-image prompts are positional: Qwen reads <image1>, <image2>, ... in call
+// order. A prompt that says "the reference image" leaves the donor unnamed, and
+// the model then applies it to whatever it wants. Require a tag for every donor
+// unless image_roles supplies the role, in which case the engine appends the map.
+function missingImageTags(raw, requiredCount, maxTag) {
+  const tags = new Set();
+  for (const m of String(raw || '').matchAll(/<image(\d+)>/g)) tags.add(Number(m[1]));
+  const outOfRange = [...tags].filter((i) => i < 1 || i > maxTag);
+  const missing = [];
+  for (let i = 2; i <= requiredCount; i++) if (!tags.has(i)) missing.push(i);
+  return { missing, outOfRange };
+}
+
+function normalizeImageRoles(raw, imageCount) {
+  if (!Array.isArray(raw) || !raw.length) return null;
+  const map = new Array(imageCount + 1).fill(null);
+  for (const entry of raw) {
+    const index = Number(entry?.index);
+    const role = String(entry?.role || '').trim();
+    if (!Number.isInteger(index) || index < 1 || index > imageCount) {
+      throw new Error(
+        `image_roles index ${entry?.index} is outside 1..${imageCount}. Indexes are 1-based in the final image order: 1 is the source canvas, 2..${imageCount} are the donors in call order.`,
+      );
+    }
+    if (!role) throw new Error(`image_roles entry ${index} needs a role, e.g. "clothing_donor".`);
+    if (map[index]) throw new Error(`image_roles lists index ${index} more than once.`);
+    map[index] = role;
+  }
+  return map;
+}
+
+function checkReferencePrompt(raw, requiredCount, roleMap = null, maxTag = requiredCount) {
+  if (requiredCount < 2) return null;
+  const { missing, outOfRange } = missingImageTags(raw, requiredCount, maxTag);
+  if (outOfRange.length) {
+    return (
+      `This edit has ${requiredCount} agent-visible image${requiredCount === 1 ? '' : 's'}, so <image${outOfRange[0]}> does not exist. ` +
+      `Tag only <image1>-<image${maxTag}>.`
+    );
+  }
+  const uncovered = missing.filter((i) => !roleMap?.[i]);
+  if (!uncovered.length) return null;
+  return (
+    `Name every donor by its <imageN> tag. Missing: ${uncovered.map((i) => `<image${i}>`).join(', ')}. ` +
+    'Order is the call order: <image1> is the source canvas, <image2>+ are donors. ' +
+    'Add one short line per donor, e.g. "<image2> supplies the dress design only.", or pass image_roles.'
+  );
+}
+
 async function callTool(name, args = {}) {
   if (!activeToolNames.has(name)) {
     throw new Error(`Tool ${name} is not available in this tool profile (${TOOL_PROFILE}).`);
@@ -952,12 +1021,25 @@ async function callTool(name, args = {}) {
       const donorImages = maskPath
         ? images.filter((p) => String(p) !== initPath && String(p) !== maskPath)
         : images;
+      // Agent-visible order: <image1> is the canvas (init_image for a mask job),
+      // <image2>+ are the donors in call order. The engine appends the marked
+      // copy after them, so a donor tag is never the guide's index.
+      const imageCount = maskPath ? donorImages.length + 1 : images.length;
+      const roleMap = normalizeImageRoles(args.image_roles, imageCount);
+      const refGate = checkReferencePrompt(
+        args.prompt,
+        imageCount,
+        roleMap,
+        maskPath ? donorImages.length + 2 : imageCount,
+      );
+      if (refGate) throw new Error(refGate);
       const { job } = await api('POST', '/api/jobs', {
     // Tags the job as agent-started: the panel refuses these when no chat
     // turn is active, so a tool call still in flight after Stop cannot render.
     source: 'agent',
         prompt: args.prompt,
         images: donorImages,
+        ...(roleMap ? { imageRoles: roleMap } : {}),
         ...(maskPath
           ? {
               initImg: initPath,
@@ -1127,13 +1209,26 @@ async function callTool(name, args = {}) {
         const gateError = checkMaskPrompt(args.prompt);
         if (gateError) throw new Error(gateError);
       }
+      // <image1> is the source layer; reference_images follow in call order. The
+      // engine appends the marked copy after them, so donors stop at N and the
+      // guide is <imageN+1>.
+      const refs = Array.isArray(args.reference_images) ? args.reference_images : [];
+      const roleMap = normalizeImageRoles(args.image_roles, refs.length + 1);
+      const refGate = checkReferencePrompt(
+        args.prompt,
+        refs.length + 1,
+        roleMap,
+        refs.length + 2,
+      );
+      if (refGate) throw new Error(refGate);
       return await api('POST', '/api/photocraft/edit-active', {
         prompt: args.prompt,
         region: args.region,
         maskLayer: args.mask_layer,
         maskInvert: args.mask_invert,
         sourceLayer: args.source_layer,
-        references: Array.isArray(args.reference_images) ? args.reference_images : undefined,
+        references: refs.length ? refs : undefined,
+        ...(roleMap ? { imageRoles: roleMap } : {}),
         mode: args.mode,
         feather: args.feather,
         strength: args.strength,
