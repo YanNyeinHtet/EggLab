@@ -772,6 +772,8 @@ ipcMain.handle('setup:action', async (e, { action, payload } = {}) => {
       return await setup.installEngine(payload?.variant || 'auto', Boolean(payload?.force));
     case 'opencode':
       return await setup.installOpencode();
+    case 'opencode-desktop':
+      return await setup.installOpencodeDesktop();
     case 'import-model':
       return await setup.importModelFile(payload?.path);
     case 'models-folder': {

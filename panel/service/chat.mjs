@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import * as opencodeService from './opencode-service.mjs';
 import { historyFileName } from './history-names.mjs';
 import { emit } from './bus.mjs';
 import { getSettings, patchSettings, engineConfig, workflowParams, visionForModel, resolveOpenCode } from './settings.mjs';
@@ -1453,16 +1453,14 @@ export function stop() {
   turnStopped = true;
   if (current) {
     current.stopped = true;
-    try {
-      spawn('taskkill', ['/pid', String(current.child.pid), '/t', '/f'], { windowsHide: true });
-    } catch {
-      try {
-        current.child.kill();
-      } catch {}
+    // The turn lives in the desktop app's service, not in a child process we
+    // own. A real interrupt stops the model; killing the desktop app would
+    // take the user's other OpenCode sessions down with it.
+    if (current.info && current.sessionId) {
+      opencodeService.interrupt(current.info, current.sessionId).catch(() => {});
     }
-    // If the CLI/server tree survives taskkill (or exits but never emits its
-    // final event), settle the turn so the UI cannot stay "working" forever.
-    // Jobs are canceled separately by chat:stop / /api/chat/stop.
+    // If the service never reports idle, settle the turn so the UI cannot stay
+    // "working" forever. Jobs are canceled separately by chat:stop.
     setTimeout(() => {
       if (active === current) {
         try {
@@ -1562,195 +1560,246 @@ export async function send(text, files = [], refMap = {}) {
   emit('chat', { action: 'start', id: agentItem.id });
   emit('chat', { action: 'busy', busy: true });
 
-  const runOnce = (model, opts = {}) =>
-    new Promise((resolve) => {
-      // Resolved once per run: the binary generation decides the flag set.
-      const oc = resolveOpenCode();
-      // Stop can land between a retry wait and this spawn; never start a run
-      // after the turn has been stopped.
-      if (turnStopped) {
-        resolve({ code: 1, text: '', tools: [], error: null, stderr: '', stopped: true });
-        return;
-      }
-      const major = oc.version?.[0] ?? 1;
-      const args = ['run'];
-      // v2 otherwise attaches to the shared background OpenCode service. Killing
-      // the CLI child then leaves the turn running inside that service (and its
-      // MCP server), so Stop looks ineffective. A private server lives under the
-      // child and dies with taskkill /T.
-      if (major >= 2) args.push('--standalone');
-      args.push('--format', 'json');
-      // v1 selects the project directory with --dir; v2 removed the flag and
-      // uses the working directory instead (set to AGENT_DIR below).
-      if (major < 2) args.push('--dir', agentDir);
-      args.push('--agent', agentId, '--model', model);
-      if (bound.sessionId) args.push('--session', bound.sessionId);
-      else if (firstRun) args.push('--title', title);
-      // `message` and `--file` are both variadic in the CLI: the message must come
-      // first, otherwise `--file` swallows it as another attachment path.
-      args.push(agentMessage);
-      for (const file of sendFiles) args.push('--file', file);
+  // One turn = one session prompt on the OpenCode desktop service. The old
+  // transport spawned `opencode run --standalone` and parsed its JSON events;
+  // the desktop app owns the session now, so text and tool chips are rebuilt
+  // from the session's message list while it executes.
+  const runOnce = async (model, opts = {}) => {
+    if (turnStopped) {
+      return { code: 1, text: '', tools: [], error: null, stderr: '', stopped: true };
+    }
 
-      const child = spawn(oc.cmd, args, {
-        cwd: agentDir,
-        windowsHide: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        // .cmd shims (npm global installs) can only be spawned through a
-        // shell since Node's CVE-2024-27980 hardening.
-        shell: oc.shell,
-      });
-      active = { child, text: '', tools: [], stderr: '', stopped: false, finish: null };
-      const parts = new Map();
-      let buffer = '';
-      let seq = 0;
+    const startedAt = Date.now();
+    const firstByteMs =
+      Math.max(30, Number(opts.firstByteSec ?? s.opencode.firstByteSec) || 600) * 1000;
+    const idleMs = Math.max(120, Number(s.opencode.idleSec) || 600) * 1000;
+    const timeoutMs = Math.max(120, Number(s.opencode.timeoutSec) || 600) * 1000;
+    const ref = opencodeService.modelRef(model);
 
-      const compose = () => [...parts.values()].join('');
-
-      const flush = () => {
-        const composed = compose();
-        if (composed !== active.text) {
-          active.text = composed;
-          agentItem.text = composed;
-          emit('chat', { action: 'delta', id: agentItem.id, text: composed, tools: agentItem.tools });
-        }
-      };
-
-      const onEvent = (ev) => {
-        if (!active) return;
-        if (ev.sessionID) {
-          if (bound.sessionId !== ev.sessionID) {
-            bound.sessionId = ev.sessionID;
-            setSession(ev.sessionID, title);
-            emit('chat', { action: 'session', id: ev.sessionID });
-          }
-        }
-        const part = ev.part || {};
-        if (part.id && part.type === 'text') {
-          parts.set(part.id, part.text || '');
-          flush();
-          return;
-        }
-        if (part.id && part.type === 'reasoning') return;
-        if (part.type === 'tool' || ev.type === 'tool' || part.type === 'tool_use') {
-          const info = toolSummary(part);
-          if (!info) return;
-          // A render can hold the turn for many minutes with no events at all.
-          // While a tool is running, silence is normal; only prompt-to-prompt
-          // silence means the model has stalled.
-          toolRunning = info.status === 'running';
-          if (toolRunning) clearTimeout(idleTimer);
-          else armIdle();
-          const existing = agentItem.tools.find((t) => t.name === info.name && t.status === 'running');
-          if (info.status === 'running' && !existing) agentItem.tools.push(info);
-          else if (existing) Object.assign(existing, info);
-          else agentItem.tools.push(info);
-          emit('chat', { action: 'tools', id: agentItem.id, tools: agentItem.tools });
-          return;
-        }
-        if (ev.type === 'error' || part.type === 'error') {
-          const msg = ev.error?.data?.message || ev.error?.message || ev.message || 'Agent error';
-          active.error = String(msg);
-        }
-      };
-
-      child.stdout.setEncoding('utf8');
-      // A provider that is at capacity can sit silent for ten minutes while
-      // opencode retries internally, which burns the whole turn. Watch the
-      // stream: nothing at all within `firstByteSec`, or a stream that goes
-      // quiet for `idleSec` mid-turn, means the run is dead — kill it so the
-      // caller can switch models instead of waiting.
-      const firstByteMs =
-        Math.max(30, Number(opts.firstByteSec ?? s.opencode.firstByteSec) || 600) * 1000;
-      const idleMs = Math.max(120, Number(s.opencode.idleSec) || 600) * 1000;
-      let gotFirst = false;
-      let idleTimer = null;
-      let stalled = null;
-      let toolRunning = false;
-      const stall = (why) => {
-        if (!active || active.child !== child) return;
-        stalled = why;
-        active.error = `${model} stopped responding (${why}).`;
-        try {
-          spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], { windowsHide: true });
-        } catch {}
-      };
-      const armIdle = () => {
-        clearTimeout(idleTimer);
-        idleTimer = setTimeout(() => stall('stream went quiet'), idleMs);
-      };
-      const firstTimer = setTimeout(() => {
-        if (!gotFirst) stall('no response from the model');
-      }, firstByteMs);
-
-      child.stdout.on('data', (chunk) => {
-        if (!active) return;
-        gotFirst = true;
-        clearTimeout(firstTimer);
-        if (!toolRunning) armIdle();
-        buffer += chunk;
-        let idx;
-        while ((idx = buffer.indexOf('\n')) >= 0) {
-          const line = buffer.slice(0, idx).trim();
-          buffer = buffer.slice(idx + 1);
-          if (!line) continue;
-          try {
-            onEvent(JSON.parse(line));
-          } catch {
-            seq++;
-          }
-        }
-      });
-      child.stderr.setEncoding('utf8');
-      child.stderr.on('data', (chunk) => {
-        if (active) active.stderr += chunk;
-      });
-
-      let finished = false;
-      const startedAt = Date.now();
-      const finish = async (code) => {
-        if (finished) return;
-        finished = true;
-        clearTimeout(firstTimer);
-        clearTimeout(idleTimer);
-        flush();
-        const stderr = active.stderr || '';
-        const result = {
-          code,
-          text: active.text.trim(),
-          tools: agentItem.tools.slice(),
-          error: active.error || null,
-          stderr,
-          stopped: active.stopped,
-          stalled: stalled || null,
-        };
-        // A silent early exit used to be invisible; keep one line per run so a
-        // failed agent turn can be diagnosed after the fact.
-        agentLog(
-          `run model=${model} code=${code} stopped=${Boolean(result.stopped)} text=${result.text.length}b ` +
-            `events=${seq} ms=${Date.now() - startedAt}` +
-            (result.error ? ` error=${JSON.stringify(String(result.error).slice(0, 300))}` : '') +
-            (stderr.trim() ? ` stderr=${JSON.stringify(stderr.trim().slice(-400))}` : ''),
-        );
-        active = null;
-        resolve(result);
-      };
-      active.finish = finish;
-      child.on('exit', (code) => finish(code ?? 0));
-      child.on('error', (err) => {
-        if (!active) return;
-        active.error = err.message;
-        finish(1);
-      });
-
-      setTimeout(() => {
-        if (active && active.child === child) {
-          active.error = 'The agent took too long. Try a shorter request.';
-          try {
-            spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], { windowsHide: true });
-          } catch {}
-        }
-      }, Math.max(120, Number(s.opencode.timeoutSec) || 600) * 1000);
+    let resolveDone = null;
+    const promise = new Promise((resolve) => {
+      resolveDone = resolve;
     });
+    let finished = false;
+    let hardTimer = null;
+    const settle = (code) => {
+      if (finished || !active) return;
+      finished = true;
+      clearTimeout(hardTimer);
+      const result = {
+        code,
+        text: String(active.text || '').trim(),
+        tools: agentItem.tools.slice(),
+        error: active.error || null,
+        stderr: active.stderr || '',
+        stopped: Boolean(active.stopped),
+        stalled: active.stalled || null,
+      };
+      agentLog(
+        `run model=${model} code=${code} stopped=${result.stopped} text=${result.text.length}b ` +
+          `ms=${Date.now() - startedAt}` +
+          (result.error ? ` error=${JSON.stringify(String(result.error).slice(0, 300))}` : '') +
+          (result.stderr.trim()
+            ? ` stderr=${JSON.stringify(result.stderr.trim().slice(-400))}`
+            : ''),
+      );
+      active = null;
+      resolveDone(result);
+    };
+
+    if (!ref) {
+      active = { info: null, sessionId: null, child: null, text: '', error: null, stderr: '' };
+      active.error = `${model} is not a provider/model pair. Choose a model in Settings.`;
+      settle(1);
+      return promise;
+    }
+
+    let info;
+    try {
+      info = await opencodeService.ensureService();
+    } catch (err) {
+      active = { info: null, sessionId: null, child: null, text: '', error: null, stderr: '' };
+      active.error = err.message;
+      settle(1);
+      return promise;
+    }
+
+    let sessionId = bound.sessionId;
+    if (!sessionId) {
+      try {
+        const created = await opencodeService.createSession(info, {
+          agent: agentId,
+          model: ref,
+          directory: agentDir,
+          title: firstRun ? title : undefined,
+        });
+        sessionId = created.id;
+        bound.sessionId = sessionId;
+        setSession(sessionId, title);
+        emit('chat', { action: 'session', id: sessionId });
+      } catch (err) {
+        active = { info, sessionId: null, child: null, text: '', error: null, stderr: '' };
+        active.error = `Could not open an OpenCode desktop session: ${err.message}`;
+        active.stderr = err.body || '';
+        settle(1);
+        return promise;
+      }
+    }
+
+    active = {
+      info,
+      sessionId,
+      child: null,
+      text: '',
+      error: null,
+      stderr: '',
+      stalled: null,
+      finish: settle,
+    };
+    hardTimer = setTimeout(() => {
+      if (!active || active.sessionId !== sessionId) return;
+      active.error = 'The agent took too long. Try a shorter request.';
+      opencodeService.interrupt(info, sessionId).catch(() => {});
+      settle(1);
+    }, timeoutMs);
+    hardTimer.unref?.();
+
+    const rawError = (e) => {
+      if (!e) return null;
+      let extra = '';
+      if (e.response?.body) {
+        try {
+          const parsed = JSON.parse(e.response.body);
+          extra = String(parsed?.error?.message || '');
+        } catch {
+          extra = String(e.response.body);
+        }
+      }
+      const primary = String(e.message || e.data?.message || extra || 'Agent error');
+      return extra && extra !== primary ? `${primary} ${extra}` : primary;
+    };
+
+    let sentAt = 0;
+    const pushPrompt = async () => {
+      try {
+        const sent = await opencodeService.prompt(info, sessionId, agentMessage, sendFiles);
+        sentAt = Number(sent?.time?.created || Date.now());
+        return null;
+      } catch (err) {
+        // A thread bound to a session from another service cannot be reused.
+        // Start a fresh desktop session rather than losing the turn.
+        if (err.status === 404) {
+          const created = await opencodeService.createSession(info, {
+            agent: agentId,
+            model: ref,
+            directory: agentDir,
+            title,
+          });
+          sessionId = created.id;
+          bound.sessionId = sessionId;
+          active.sessionId = sessionId;
+          setSession(sessionId, title);
+          emit('chat', { action: 'session', id: sessionId });
+          const sent = await opencodeService.prompt(info, sessionId, agentMessage, sendFiles);
+          sentAt = Number(sent?.time?.created || Date.now());
+          return null;
+        }
+        return err;
+      }
+    };
+
+    let lastText = '';
+    let lastTools = '';
+    let lastProgress = Date.now();
+    let sawWork = false;
+    try {
+      const promptError = await pushPrompt();
+      if (promptError) throw promptError;
+      while (!turnStopped && !finished) {
+        const [detail, list] = await Promise.all([
+          opencodeService.getSession(info, sessionId),
+          opencodeService.messages(info, sessionId),
+        ]);
+        let text = '';
+        const tools = new Map();
+        let failure = null;
+        // Only this turn's messages: a session keeps earlier failures, and a
+        // stale error would mislabel a healthy retry.
+        const fresh = list.filter((m) => Number(m?.time?.created || 0) >= sentAt);
+        for (const m of fresh) {
+          if (m.error) failure = m.error;
+          if (m.type === 'idle' && m.outcome && m.outcome !== 'running') {
+            if (m.error) failure = m.error;
+            else if (m.outcome === 'failed' && !failure) {
+              failure = { message: 'The agent run failed.' };
+            }
+          }
+          if (m.type !== 'assistant' || !Array.isArray(m.content)) continue;
+          for (const part of m.content) {
+            if (part.type === 'text') text += String(part.text || '');
+            if (part.type === 'tool') {
+              const chip = toolSummary({ name: part.name, state: part.state || {} });
+              if (chip) tools.set(part.id || `${part.name}-${tools.size}`, chip);
+            }
+          }
+        }
+        if (text !== lastText) {
+          lastText = text;
+          active.text = text;
+          agentItem.text = text;
+          agentItem.tools = [...tools.values()];
+          lastProgress = Date.now();
+          sawWork = true;
+          emit('chat', { action: 'delta', id: agentItem.id, text, tools: agentItem.tools });
+        }
+        const toolKey = JSON.stringify([...tools.values()]);
+        if (toolKey !== lastTools) {
+          lastTools = toolKey;
+          lastProgress = Date.now();
+          sawWork = true;
+          agentItem.tools = [...tools.values()];
+          emit('chat', { action: 'tools', id: agentItem.id, tools: agentItem.tools });
+        }
+        if (failure) {
+          active.error = rawError(failure);
+          active.stderr = failure.response?.body || '';
+        }
+        const idle = Number(detail?.time?.idle || 0);
+        const outcome = detail?.outcome;
+        if ((idle && idle >= sentAt) || (idle && outcome && outcome !== 'running')) {
+          settle(failure || outcome === 'failed' ? 1 : 0);
+          break;
+        }
+        const anyRunning = [...tools.values()].some((t) => t.status === 'running');
+        if (!sawWork && Date.now() - startedAt > firstByteMs) {
+          active.stalled = 'no response from the model';
+          active.error = `${model} stopped responding (no response from the model).`;
+          opencodeService.interrupt(info, sessionId).catch(() => {});
+          settle(1);
+          break;
+        }
+        if (sawWork && !anyRunning && Date.now() - lastProgress > idleMs) {
+          active.stalled = 'stream went quiet';
+          active.error = `${model} stopped responding (stream went quiet).`;
+          opencodeService.interrupt(info, sessionId).catch(() => {});
+          settle(1);
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 450));
+      }
+      if (!finished) {
+        active.stopped = true;
+        settle(-1);
+      }
+    } catch (err) {
+      if (active) {
+        active.error = err.message;
+        active.stderr = err.body || '';
+      }
+      settle(1);
+    }
+    return promise;
+  };
 
   const maxRetries = Math.max(0, Number(s.opencode.retries) || 0);
   const baseMs = Math.max(1, Number(s.opencode.retryBaseSec) || 8) * 1000;

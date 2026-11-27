@@ -3056,11 +3056,11 @@ function renderSetup() {
     </div>
     <div class="setup-step ${oc.running ? 'busy' : oc.found ? 'ok' : 'miss'}">
       <div class="setup-step-head"><span class="setup-dot"></span><b>OpenCode</b>${oc.running ? '<span class="setup-pill">Working…</span>' : setupBadge(oc.found, 'Found', 'Not installed')}</div>
-      <p class="setup-note">${oc.found ? `${esc(oc.exe)}${oc.version ? ` · v${esc(oc.version)}` : ''}` : 'The agent runtime behind the chat. Use the OpenCode you already have, or download the standalone CLI.'}${oc.error ? `<br><span class="setup-err">${esc(oc.error)}</span>` : ''}</p>
+      <p class="setup-note">${oc.desktop?.installed ? `Desktop app installed${oc.desktop.service ? ' · service ready' : ' · start the app and sign in once'}` : 'The agent runs inside the OpenCode desktop app. Download it here, then sign in once.'}${oc.error ? `<br><span class="setup-err">${esc(oc.error)}</span>` : ''}</p>
       ${oc.running ? `<div class="setup-progress"><i style="width:${ocPercent}%"></i></div><p class="setup-note">${esc(ocPhase || 'Preparing…')}</p>` : ''}
       <div class="setup-actions">
         <button class="mini" data-setup="use-opencode">Use existing…</button>
-        <button class="mini" data-setup="install-oc" ${oc.running ? 'disabled' : ''}>${oc.found ? 'Reinstall' : 'Download CLI (78 MB)'}</button>
+        <button class="mini" data-setup="install-oc" ${oc.running ? 'disabled' : ''}>${oc.desktop?.installed ? 'Start desktop app' : 'Download desktop app'}</button>
         <button class="mini" data-setup="refresh-setup-models" ${oc.found ? '' : 'disabled'}>Refresh models</button>
       </div>
       <div class="setup-model">
@@ -3156,8 +3156,8 @@ async function onSetupAction(action) {
         toast('Launching PhotoCraft…');
         break;
       case 'install-oc':
-        await api.setupAction('opencode');
-        toast('Downloading OpenCode (78 MB)…');
+        await api.setupAction('opencode-desktop');
+        toast(st.opencode?.desktop?.installed ? 'Starting OpenCode desktop…' : 'Downloading OpenCode desktop…');
         break;
       case 'install-engine': {
         // The select is rendered dynamically with the engine card.

@@ -411,7 +411,7 @@ check(
   /purgeDeletedThreads/.test(sessionsSource) && /sessions\.purgeDeletedThreads\(\)/.test(read('main.mjs')),
 );
 check('tombstones are written to disk', /DELETED_FILE/.test(sessionsSource) && /deleted-threads\.json/.test(sessionsSource));
-check('OpenCode v2 uses a private server', /if \(major >= 2\) args\.push\('--standalone'\)/.test(chatSource));
+check('chat turns run on the OpenCode desktop service', /opencodeService\.ensureService\(\)/.test(chatSource) && /opencodeService\.prompt\(info, sessionId/.test(chatSource));
 check('Stop has a settle watchdog', /current\.finish\?\.\(-1\)/.test(chatSource));
 check('Stop covers the retry gap', /let turnRunning/.test(chatSource) && /turnStopped/.test(chatSource));
 check('Retry wait aborts on Stop', /if \(turnStopped\) return false/.test(chatSource));
@@ -585,7 +585,7 @@ check(
   'mask attachments are never images or donors in the agent message',
   /painted mask SELECTOR/.test(read('service/chat.mjs')) &&
     /const sendFiles = cleanFiles\.filter\(\(f\) => vision && !isSelector\(f\)\)/.test(read('service/chat.mjs')) &&
-    /for \(const file of sendFiles\) args\.push\('--file', file\)/.test(read('service/chat.mjs')) &&
+    /files: files\.map\(\(p\) => \(\{ uri: pathToFileURL/.test(read('service/opencode-service.mjs')) &&
     !/Use these with egl_edit \(images array\)/.test(read('service/chat.mjs')),
 );
 check(

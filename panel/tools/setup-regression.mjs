@@ -124,7 +124,7 @@ check(
   'OpenCode report reads paths, auth and models',
   /opencodeDebugPaths/.test(settingsSource) &&
     /opencodeAuthList/.test(settingsSource) &&
-    /--standalone/.test(settingsSource),
+    /opencodeService\.api\(info, 'GET', '\/api\/model'\)/.test(settingsSource),
 );
 check(
   'setup can select an existing OpenCode binary',
@@ -152,7 +152,7 @@ check(
 );
 check(
   'agent model list matches the chat workspace',
-  /cwd: AGENT_DIR/.test(settingsSource) && /standalone: true/.test(settingsSource),
+  /cwd: AGENT_DIR/.test(settingsSource) && /viaService/.test(settingsSource),
 );
 check(
   'OpenCode discovery includes EggLab-installed CLI',
@@ -165,6 +165,13 @@ check(
 check(
   'agent model panel can download the setup CLI',
   /btnInstallOpenCode/.test(rendererSource) && /case 'opencode':/.test(read('panel/main.mjs')),
+);
+check(
+  'setup installs the OpenCode desktop app and links its service',
+  /installOpencodeDesktop/.test(read('panel/service/setup.mjs')) &&
+    /opencode-desktop/.test(read('panel/service/http.mjs')) &&
+    /opencode-desktop/.test(read('panel/main.mjs')) &&
+    /Download desktop app/.test(rendererSource),
 );
 check(
   'OpenCode desktop app resolves to its CLI',

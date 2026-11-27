@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import { spawn, execFileSync } from 'node:child_process';
 import { AGENT_DIR, BIN_DIR, DATA_DIR, ENGINE_DIR, MODELS_DIR, PACKAGED, ROOT, readJson, writeJson } from './paths.mjs';
+import * as opencodeService from './opencode-service.mjs';
 
 const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
 
@@ -741,6 +742,46 @@ export async function opencodeModels(force = false, options = {}) {
   const now = Date.now();
   if (!force && modelsCache && modelsCacheKey === cacheKey && now - modelsCacheAt < MODELS_CACHE_TTL) {
     return modelsCache;
+  }
+  // The chat runtime is the desktop app, so prefer its service for discovery:
+  // no extra CLI process is spawned when the service is already running. The
+  // CLI listing stays as a fallback for a fresh install before first launch.
+  {
+    try {
+      const info = opencodeService.serviceInfo();
+      if (info && (await opencodeService.ping(info))) {
+        const res = await opencodeService.api(info, 'GET', '/api/model');
+        const byProvider = new Map();
+        for (const m of res?.data || []) {
+          const provider = String(m.providerID || '');
+          const id = String(m.id || '');
+          if (!provider || !id) continue;
+          if (!byProvider.has(provider)) byProvider.set(provider, []);
+          byProvider.get(provider).push({ id: `${provider}/${id}`, modelId: id, provider });
+        }
+        const providers = [...byProvider.entries()]
+          .map(([provider, models]) => ({
+            provider,
+            models: models.sort((a, b) => a.modelId.localeCompare(b.modelId)),
+          }))
+          .sort((a, b) => a.provider.localeCompare(b.provider));
+        const value = {
+          providers,
+          error: null,
+          bin: info.url,
+          cwd: AGENT_DIR,
+          standalone: false,
+          viaService: true,
+          fetchedAt: now,
+        };
+        modelsCache = value;
+        modelsCacheKey = `service:${info.url}`;
+        modelsCacheAt = now;
+        return value;
+      }
+    } catch {
+      // Fall through to the CLI listing below.
+    }
   }
   const result = await new Promise((resolve) => {
     // v1 needs --refresh to bypass its cache; v2 has no such flag.

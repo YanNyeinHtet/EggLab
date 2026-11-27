@@ -40,6 +40,13 @@ import {
   setOpenCodePath as storeOpenCodePath,
 } from './settings.mjs';
 import { modelStatus, useVariant, variantForFile } from './models.mjs';
+import {
+  desktopCandidates,
+  ensureService,
+  launchDesktop,
+  ping,
+  serviceInfo,
+} from './opencode-service.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -82,6 +89,9 @@ export async function setupStatus() {
   const status = modelStatus();
   const info = engineInfo();
   const oc = opencodeFound();
+  const desktopExe = desktopCandidates()[0] || '';
+  const svc = serviceInfo();
+  const serviceLive = Boolean(svc && (await ping(svc)));
   const pcExe = String(s.photocraft?.exe || '');
   let pcFound = false;
   try {
@@ -98,7 +108,7 @@ export async function setupStatus() {
   return {
     done,
     firstRun: !done,
-    ready: pcFound && Boolean(oc) && engineInstalled && missing.length === 0,
+    ready: pcFound && (serviceLive || Boolean(oc)) && engineInstalled && missing.length === 0,
     photocraft: {
       found: pcFound,
       exe: pcExe,
@@ -108,6 +118,11 @@ export async function setupStatus() {
       found: Boolean(oc),
       exe: oc?.cmd || '',
       version: oc?.version ? oc.version.join('.') : null,
+      desktop: {
+        installed: Boolean(desktopExe),
+        exe: desktopExe,
+        service: serviceLive,
+      },
       running: state.opencode.running,
       phase: state.opencode.phase,
       received: state.opencode.received,
@@ -537,6 +552,62 @@ export async function installOpencode() {
     });
 
   return { started: true, url: OPENCODE_ZIP };
+}
+
+// The chat runtime is the OpenCode desktop app, not a private CLI process.
+// Setup installs the desktop app from the official latest-stable endpoint;
+// a private mirror can be supplied for offline/enterprise installs.
+const OPENCODE_DESKTOP_URL =
+  process.env.EGGLAB_OPENCODE_DESKTOP_URL ||
+  'https://opencode.ai/update/api/latest/desktop/opencode/opencode-desktop-win-x64.exe';
+
+export async function installOpencodeDesktop() {
+  if (state.opencode.running) return { started: false, running: true };
+  if (desktopCandidates().length) {
+    // Already installed: just start it and wait for its local service.
+    try {
+      await launchDesktop();
+      await ensureService(45000);
+    } catch (err) {
+      return { started: false, error: err.message };
+    }
+    emit('settings', { settings: getSettings() });
+    return { started: false, alreadyInstalled: true, service: true };
+  }
+  state.opencode = { running: true, phase: 'downloading', received: 0, total: 0, error: null };
+  emit('setup', { step: 'opencode', status: 'downloading' });
+  (async () => {
+    const installer = path.join(TMP_DIR, 'opencode-desktop-win-x64.exe');
+    await downloadFile(OPENCODE_DESKTOP_URL, installer, (received, total) => {
+      state.opencode.received = received;
+      state.opencode.total = total;
+      emit('setup', { step: 'opencode', status: 'downloading', received, total });
+    });
+    state.opencode.phase = 'installing';
+    emit('setup', { step: 'opencode', status: 'installing' });
+    await spawnWait(installer, ['/S'], { windowsHide: true });
+    const until = Date.now() + 30000;
+    while (!desktopCandidates().length && Date.now() < until) {
+      await new Promise((r) => setTimeout(r, 700));
+    }
+    if (!desktopCandidates().length) {
+      throw new Error('OpenCode desktop was installed but its executable was not found. Locate it in Setup.');
+    }
+    await launchDesktop();
+    state.opencode.phase = 'done';
+    state.opencode.received = state.opencode.total;
+    emit('setup', { step: 'opencode', status: 'done', desktop: true });
+    emit('settings', { settings: getSettings() });
+  })()
+    .catch((err) => {
+      state.opencode.error = err.message;
+      state.opencode.phase = 'error';
+      emit('setup', { step: 'opencode', status: 'error', error: err.message });
+    })
+    .finally(() => {
+      state.opencode.running = false;
+    });
+  return { started: true, url: OPENCODE_DESKTOP_URL };
 }
 
 /* ------------------------------------------------------------------ */

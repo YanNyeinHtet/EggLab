@@ -140,6 +140,9 @@ async function handle(req, res, url) {
     case 'POST /api/setup/opencode':
       return json(res, 200, await setup.installOpencode());
 
+    case 'POST /api/setup/opencode-desktop':
+      return json(res, 200, await setup.installOpencodeDesktop());
+
     case 'POST /api/setup/import-model':
       return json(res, 200, await setup.importModelFile(body.path));
 
