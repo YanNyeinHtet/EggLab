@@ -229,8 +229,8 @@ check(
     /never\s+change the user's selection|do not silently change/i.test(settingsSource),
 );
 check(
-  'a model listing alone cannot mark the opencode provider connected',
-  !/\|\|\s*provider\.provider === 'opencode'/.test(settingsSource) &&
+  'the built-in opencode provider is connected when the desktop app is present',
+  /provider\.provider === 'opencode' && desktopExe/.test(settingsSource) &&
     /desktopOnly/.test(settingsSource) &&
     /selectedDesktopOnly/.test(settingsSource),
 );

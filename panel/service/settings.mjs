@@ -1096,14 +1096,18 @@ export async function opencodeReport(force = false) {
   const configuredProviderIds = new Set(Object.keys(config.providers || {}));
   const connectedProviderIds = new Set([...activeProviderIds, ...configuredProviderIds]);
   // Local runtimes need no saved account and stay routable when their models
-  // are present. OpenCode's built-in `opencode` catalog is different: those
-  // free models work in the desktop app, but the CLI EggLab spawns needs an
-  // OpenCode Go credential. Never mark `opencode` connected on the strength of
-  // a model listing alone — doing so made every `opencode/<free>` selection
-  // fail with a misleading "free limit reached" error, including on fresh
-  // installs.
+  // are present. The built-in `opencode` catalog is the same kind of runtime:
+  // it is served by the installed desktop app itself, so when the desktop
+  // executable is present and actually lists models, it is routable without a
+  // separate credential. It used to be rejected here because EggLab's agent
+  // had a global deny rule that made those free models return "free limit";
+  // that rule is gone, so the provider is genuinely connected now.
   for (const provider of models.providers || []) {
-    if (['ollama', 'lmstudio', 'vllm'].includes(provider.provider) && (provider.models || []).length) {
+    const hasModels = Boolean((provider.models || []).length);
+    if (!hasModels) continue;
+    if (['ollama', 'lmstudio', 'vllm'].includes(provider.provider)) {
+      connectedProviderIds.add(provider.provider);
+    } else if (provider.provider === 'opencode' && desktopExe) {
       connectedProviderIds.add(provider.provider);
     }
   }
