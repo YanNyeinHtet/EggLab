@@ -2146,17 +2146,17 @@ function renderProviders() {
     return;
   }
 
-  // Only connected providers can be used by the agent. OpenCode lists models
-  // from every provider it knows, including built-in ones with no account;
-  // offering those here guarantees a failed turn. Keep this generic so any
-  // provider in that state is treated the same way, not a named exception.
-  const all = (S.providers || []).filter((provider) => provider.connected);
+  // Show every provider OpenCode knows, including ones without a connected
+  // account. Filtering them out left a fresh install with a single row (the
+  // current selection) and no way to see what is available or why. Disconnected
+  // models stay visible but are marked and refused on click by selectModel().
+  const all = S.providers || [];
   if (!all.length) {
     const report = S.ocReport;
     const detail = report?.modelsError
       ? `<div class="providers-error">${esc(report.modelsError)}</div>`
       : '';
-    box.innerHTML = `<div class="providers-empty">No connected OpenCode models found. Connect a provider in OpenCode first.</div>${detail}`;
+    box.innerHTML = `<div class="providers-empty">No OpenCode models found. Connect a provider in OpenCode first.</div>${detail}`;
     return;
   }
 
@@ -2193,6 +2193,13 @@ function renderProviders() {
   }
 
   box.innerHTML = '';
+  if (!all.some((provider) => provider.connected)) {
+    const hint = document.createElement('div');
+    hint.className = 'providers-error';
+    hint.textContent =
+      'No provider is connected in OpenCode yet. Connect one in OpenCode desktop, then click Refresh here.';
+    box.appendChild(hint);
+  }
   for (const prov of providers) {
     // Default: the provider of the current model is open, the rest collapsed.
     // Once the user toggles a group their choice wins.
@@ -2238,7 +2245,7 @@ function renderProviders() {
         row.ariaLabel = `Select model ${m.id}`;
         row.innerHTML = `
           <span class="model-id">${esc(m.modelId)}</span>
-          <span class="model-badge">${selected ? 'selected' : ''}</span>
+          <span class="model-badge">${selected ? 'selected' : ''}${prov.connected ? '' : ' · not connected'}</span>
         `;
         row.onclick = () => selectModel(m.id);
         row.onkeydown = (e) => {
@@ -2261,7 +2268,7 @@ async function selectModel(modelId) {
   const provider = (S.providers || []).find((p) => p.provider === providerId);
   if (provider && !provider.connected) {
     toast(
-      'That provider is not connected in OpenCode. Connect it there, or choose a model from a connected provider.',
+      'That provider is not connected in OpenCode. Connect it in OpenCode desktop, then click Refresh here.',
       'error',
     );
     return;
