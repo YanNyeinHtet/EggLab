@@ -385,6 +385,11 @@ function handleEvent(ev) {
   switch (ev.type) {
     case 'chat':
       handleChatEvent(ev);
+      // Sending a turn can start the OpenCode desktop service (or reveal a
+      // provider that had no live service at panel startup). Recheck the
+      // provider report afterwards so a working model is no longer labelled
+      // "not connected" until the user reopens the drawer.
+      if (ev.action === 'done' && S.providersLoaded) refreshProviders(true);
       break;
     case 'job':
     case 'job:finished':

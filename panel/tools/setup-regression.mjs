@@ -231,7 +231,8 @@ check(
 check(
   'settings and setup force a fresh provider report when opened',
   /refreshProviders\(true\)/.test(rendererSource) &&
-    /await loadSetupModels\(true\)/.test(rendererSource),
+    /await loadSetupModels\(true\)/.test(rendererSource) &&
+    /ev\.action === 'done' && S\.providersLoaded/.test(rendererSource),
 );
 check(
   'detection invalidates the cached provider report',
