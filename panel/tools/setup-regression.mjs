@@ -148,7 +148,7 @@ check(
   /opencodeReport/.test(settingsSource) &&
     /S\.ocReport/.test(rendererSource) &&
     /renderOcStatus/.test(rendererSource) &&
-    /refreshProviders\(false\)/.test(rendererSource),
+    /refreshProviders\(true\)/.test(rendererSource),
 );
 check(
   'agent model list matches the chat workspace',
@@ -232,7 +232,8 @@ check(
   'settings and setup force a fresh provider report when opened',
   /refreshProviders\(true\)/.test(rendererSource) &&
     /await loadSetupModels\(true\)/.test(rendererSource) &&
-    /ev\.action === 'done' && S\.providersLoaded/.test(rendererSource),
+    /ev\.action === 'done'\) refreshProviders\(true\)/.test(rendererSource) &&
+    /startProviderSync\(\);/.test(rendererSource),
 );
 check(
   'detection invalidates the cached provider report',

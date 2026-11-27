@@ -389,7 +389,7 @@ function handleEvent(ev) {
       // provider that had no live service at panel startup). Recheck the
       // provider report afterwards so a working model is no longer labelled
       // "not connected" until the user reopens the drawer.
-      if (ev.action === 'done' && S.providersLoaded) refreshProviders(true);
+      if (ev.action === 'done') refreshProviders(true);
       break;
     case 'job':
     case 'job:finished':
@@ -2049,23 +2049,28 @@ let providerTimer = 0;
 
 async function refreshProviders(force = false) {
   try {
-    const report = await api.opencodeReport(force);
+    // Always ask for a live report. A cached one can predate the desktop
+    // service and leave working providers labelled "not connected" forever.
+    const report = await api.opencodeReport(true);
     S.ocReport = report;
     S.providers = report.providers || [];
     S.providersLoaded = true;
     renderProviders();
   } catch (err) {
+    // Drop stale data instead of leaving old "not connected" rows on screen.
+    S.providers = [];
     const box = $('#providersList');
     if (box) box.innerHTML = `<div class="providers-error">Could not load models: ${friendly(err)}</div>`;
     S.providersLoaded = true;
   }
 }
 
-// Keep the list in step with OpenCode while the drawer is open: if the user
-// connects/disconnects a provider in another window, the list updates itself.
+// Keep the model list in step with the desktop service even while the drawer
+// is closed: the service often starts after EggLab, and a provider that was
+// "not connected" at boot can become usable without any UI interaction.
 function startProviderSync() {
   stopProviderSync();
-  providerTimer = setInterval(() => refreshProviders(false), 60000);
+  providerTimer = setInterval(() => refreshProviders(true), 30000);
 }
 
 function stopProviderSync() {
@@ -2917,6 +2922,12 @@ function bind() {
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') closeDrawer();
   });
+
+  // Start provider sync once for the whole app, not only when the drawer is
+  // open. A desktop service that appears after boot then updates the model
+  // badges without waiting for the user to reopen Settings.
+  refreshProviders(true);
+  startProviderSync();
 }
 
 function on(sel, event, handler) {
@@ -2929,7 +2940,8 @@ function closeDrawer() {
   $('#drawer').classList.remove('open');
   $('#drawer').setAttribute('aria-hidden', 'true');
   $('#scrim').classList.remove('on');
-  stopProviderSync();
+  // Provider sync keeps running in the background: the desktop service may
+  // start later, and the model list must catch up without reopening the drawer.
 }
 
 function clampInt(value, min, max) {
