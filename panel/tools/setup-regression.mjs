@@ -229,6 +229,11 @@ check(
     /never\s+change the user's selection|do not silently change/i.test(settingsSource),
 );
 check(
+  'settings and setup force a fresh provider report when opened',
+  /refreshProviders\(true\)/.test(rendererSource) &&
+    /await loadSetupModels\(true\)/.test(rendererSource),
+);
+check(
   'detection invalidates the cached provider report',
   /reportCache = null/.test(settingsSource) && /modelsCache = null/.test(settingsSource),
 );

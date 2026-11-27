@@ -2596,7 +2596,10 @@ function bind() {
     // models: a canceled/failed download may have been repaired or installed
     // outside this window while the drawer was closed.
     refreshModels();
-    refreshProviders();
+    // Force a fresh provider report: the desktop service may have started
+    // after the last cached report, which would leave a working provider
+    // showing as "not connected" until the next manual refresh.
+    refreshProviders(true);
     startProviderSync();
   };
   window.openDrawer = openDrawer;
@@ -2996,7 +2999,9 @@ async function loadSetup() {
     return;
   }
   try {
-    await loadSetupModels(false);
+    // Setup is opened when things have just been installed/changed; a cached
+    // report can predate the running desktop service and mislabel providers.
+    await loadSetupModels(true);
   } catch {}
   renderSetup();
   if (S.setup.firstRun) showSetup();
