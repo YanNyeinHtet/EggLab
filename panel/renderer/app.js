@@ -2189,6 +2189,10 @@ function renderProviders() {
   const providers = allWithCurrent
     .map((p) => ({
       provider: p.provider,
+      // Preserve connectivity through the re-map: the group header and every
+      // model row read `prov.connected`, and dropping it labelled all models
+      // "not connected" even when the report had them connected.
+      connected: p.connected,
       models: q
         ? p.models.filter(
             (m) => m.modelId.toLowerCase().includes(q) || p.provider.toLowerCase().includes(q),

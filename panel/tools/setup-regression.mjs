@@ -193,8 +193,9 @@ check(
     !/pathLabel = report\.configuredPath/.test(rendererSource),
 );
 check(
-  'the model picker shows every provider and marks disconnected ones',
-  /const all = S\.providers \|\| \[\]/.test(rendererSource) &&
+  'the model picker preserves the connected flag through its re-map',
+  /provider: p\.provider,\s*\/\/ Preserve connectivity[\s\S]{0,200}?connected: p\.connected/.test(rendererSource) &&
+    /const all = S\.providers \|\| \[\]/.test(rendererSource) &&
     /No provider is connected in OpenCode yet/.test(rendererSource) &&
     /provider && !provider\.connected/.test(rendererSource) &&
     !/this chat runs the CLI/.test(read('panel/service/chat.mjs')),
