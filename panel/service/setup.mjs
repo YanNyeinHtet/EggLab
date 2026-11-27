@@ -586,32 +586,28 @@ export async function installOpencodeDesktop() {
       emit('setup', { step: 'opencode', status: 'downloading', received, total });
     });
     state.opencode.phase = 'installing';
-    emit('setup', { step: 'opencode', status: 'installing' });
-    await spawnWait(installer, ['/S'], { windowsHide: true });
-    const until = Date.now() + 30000;
-    while (!desktopCandidates().length && Date.now() < until) {
-      await new Promise((r) => setTimeout(r, 700));
-    }
-    const installed = desktopCandidates()[0];
-    if (!installed) {
-      throw new Error(
-        'OpenCode desktop was installed but its executable was not found. Use "Use existing..." in Setup to point at OpenCode.exe.',
-      );
-    }
-    // Remember the discovered path so the runtime keeps finding it even if the
-    // installer used a non-default location.
-    patchSettings({ opencode: { desktopExe: installed } });
-    await launchDesktop();
+    emit('setup', {
+      step: 'opencode',
+      status: 'installing',
+      message: 'Installer opened. Finish the OpenCode setup in the window that appears.',
+    });
+    // The installer is opened for the user, not run silently: they choose the
+    // install location. A custom folder is linked afterwards with "Use existing…".
     try {
-      await ensureService(60000);
+      const child = spawn(installer, [], { detached: true, stdio: 'ignore', windowsHide: false });
+      child.unref?.();
     } catch (err) {
-      // The app may need a first sign-in; Setup still reports the install.
-      emit('setup', { step: 'opencode', status: 'warn', error: err.message });
+      throw new Error(`Could not open the OpenCode installer: ${err.message}`);
     }
-    state.opencode.phase = 'done';
+    state.opencode.phase = 'awaiting-user';
     state.opencode.received = state.opencode.total;
-    emit('setup', { step: 'opencode', status: 'done', desktop: true, exe: installed });
-    emit('settings', { settings: getSettings() });
+    emit('setup', {
+      step: 'opencode',
+      status: 'awaiting-user',
+      installer,
+      message:
+        'Complete the install. If you chose a custom folder, use "Use existing…" in the agent model settings to point at OpenCode.exe.',
+    });
   })()
     .catch((err) => {
       state.opencode.error = err.message;
@@ -621,7 +617,7 @@ export async function installOpencodeDesktop() {
     .finally(() => {
       state.opencode.running = false;
     });
-  return { started: true, url: OPENCODE_DESKTOP_URL };
+  return { started: true, url: OPENCODE_DESKTOP_URL, needsUser: true };
 }
 
 /* ------------------------------------------------------------------ */

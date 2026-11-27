@@ -681,7 +681,7 @@ export function setOpenCodePath(file) {
     };
   }
 
-  if (!version) throw new Error('That file did not start as OpenCode. Pick opencode.exe or opencode-cli.exe.');
+  if (!version) throw new Error('That file did not start as OpenCode. Pick the OpenCode desktop app (OpenCode.exe).');
   if (version[0] < 2) {
     throw new Error(`OpenCode ${version.join('.')} found. EggLab needs OpenCode v2 or newer.`);
   }

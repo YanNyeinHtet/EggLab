@@ -178,13 +178,23 @@ check(
   /configuredDesktopExe/.test(read('panel/service/opencode-service.mjs')) &&
     /Program Files/.test(read('panel/service/opencode-service.mjs')) &&
     /desktopExe/.test(settingsSource) &&
-    /desktopExe: installed/.test(read('panel/service/setup.mjs')),
+    /desktopExe: abs/.test(settingsSource),
 );
 check(
   'the settings drawer no longer offers the standalone CLI installer',
   !/Download CLI/.test(read('panel/renderer/index.html')) &&
     /api\.setupAction\('opencode-desktop'\)/.test(rendererSource) &&
     !/api\.setupAction\('opencode'\)/.test(rendererSource),
+);
+check(
+  'settings shows the desktop exe, not the bundled CLI path',
+  /s\.opencode\?\.desktopExe \|\| S\.ocReport\?\.configuredPath/.test(rendererSource),
+);
+check(
+  'the desktop installer is opened for the user to complete',
+  /needsUser: true/.test(read('panel/service/setup.mjs')) &&
+    !/spawnWait\(installer, \['\/S'\]/.test(read('panel/service/setup.mjs')) &&
+    /complete the OpenCode setup/.test(rendererSource),
 );
 check(
   'OpenCode desktop app resolves to its CLI',

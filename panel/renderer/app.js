@@ -1712,7 +1712,7 @@ function syncUI() {
   }
   const ocExeEl = $('#ocExe');
   if (ocExeEl) {
-    const selected = S.ocReport?.configuredPath || s.opencode?.exe || '';
+    const selected = s.opencode?.desktopExe || S.ocReport?.configuredPath || s.opencode?.exe || '';
     ocExeEl.value = selected;
     ocExeEl.title = selected;
   }
@@ -2120,7 +2120,7 @@ function renderOcStatus() {
       add(`Selected model available: ${selected}`, 'dim');
     }
     if (!report.selectedConnected && report.suggestedModel) {
-      add(`CLI-ready free model: ${report.suggestedModel}`, 'warn');
+      add(`Suggested free model: ${report.suggestedModel}`, 'warn');
     }
     if (/(?:^|\/)[^/]*-free(?:$|#)/i.test(selected) || /-free/i.test(selected)) {
       add('Free model selected. Provider/free limits can pause chats.', 'warn');
@@ -2759,9 +2759,9 @@ function bind() {
         await refreshRuntime();
         await refreshProviders(true);
         if (result?.desktopApp) {
-          toast(`Using OpenCode desktop: ${result.desktopApp || result.exe}`, 'ok');
+          toast(result?.desktopApp ? `Using OpenCode desktop: ${result.desktopApp}` : 'OpenCode linked.', 'ok');
         } else {
-          toast('OpenCode linked. Providers and models loaded from that binary.', 'ok');
+          toast('OpenCode linked. Providers and models loaded.', 'ok');
         }
       } catch (err) {
         toast(friendly(err), 'error');
@@ -2774,7 +2774,7 @@ function bind() {
       installOpenCodeBtn.disabled = true;
       try {
         await api.setupAction('opencode-desktop');
-        toast('Downloading the OpenCode desktop app…', 'ok');
+        toast('Downloading the installer — complete the OpenCode setup in the window that opens.', 'ok');
       } catch (err) {
         toast(friendly(err), 'error');
         installOpenCodeBtn.disabled = false;
@@ -3068,9 +3068,9 @@ function renderSetup() {
         <button class="mini" data-setup="save-setup-model" ${oc.found ? '' : 'disabled'}>Use this model</button>
       </div>
       ${ocReport ? `<p class="setup-note">${ocReport.providers?.length || 0} providers · ${ocReport.modelCount || 0} models · ${ocReport.auth?.length || 0} accounts${ocReport.modelsError ? ` · <span class="setup-err">${esc(ocReport.modelsError)}</span>` : ''}</p>` : ''}
-      ${ocReport?.selectedDesktopOnly ? `<p class="setup-note"><span class="setup-err">OpenCode's desktop-only free models do not work in EggLab's CLI.</span> Choose a model from a connected provider such as <b>opencode-go</b>.</p>` : ''}
+      ${ocReport?.selectedDesktopOnly ? `<p class="setup-note"><span class="setup-err">OpenCode's desktop-only free models do not work in the EggLab agent.</span> Choose a model from a connected provider such as <b>opencode-go</b>.</p>` : ''}
       ${ocReport?.suggestedModel && (!ocReport.selectedConnected || !currentModel)
-        ? `<p class="setup-note">Suggested CLI-ready free model: <b>${esc(ocReport.suggestedModel)}</b></p>
+        ? `<p class="setup-note">Suggested free model: <b>${esc(ocReport.suggestedModel)}</b></p>
            <div class="setup-actions"><button class="mini" data-setup="use-suggested-model">Use ${esc(ocReport.suggestedModel)}</button></div>`
         : ''}
       <p class="setup-note">${S.settings?.opencode?.model ? `Current model: ${esc(S.settings.opencode.model)}` : 'Choose the chat model after OpenCode is connected.'}</p>
@@ -3157,7 +3157,7 @@ async function onSetupAction(action) {
         break;
       case 'install-oc':
         await api.setupAction('opencode-desktop');
-        toast(st.opencode?.desktop?.installed ? 'Starting OpenCode desktop…' : 'Downloading OpenCode desktop…');
+        toast(st.opencode?.desktop?.installed ? 'Starting OpenCode desktop…' : 'Downloading installer — you will complete the OpenCode setup.');
         break;
       case 'install-engine': {
         // The select is rendered dynamically with the engine card.
@@ -3195,9 +3195,9 @@ async function onSetupAction(action) {
         if (!file) return;
         const result = await api.setupAction('opencode-path', { path: file });
         if (result?.selected?.desktopApp) {
-          toast(`Using OpenCode desktop: ${result.selected.desktopExe || result.selected.exe}`, 'ok');
+          toast(result?.selected?.desktopExe ? `Using OpenCode desktop: ${result.selected.desktopExe}` : 'OpenCode linked.', 'ok');
         } else {
-          toast('OpenCode linked. Providers and models loaded from that binary.', 'ok');
+          toast('OpenCode linked. Providers and models loaded.', 'ok');
         }
         S.ocReport = null;
         S.providersLoaded = false;
