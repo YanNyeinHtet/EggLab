@@ -1,7 +1,7 @@
 {
   "name": "egglab",
   "productName": "EggLab",
-  "version": "0.3.48",
+  "version": "0.3.49",
   "private": true,
   "description": "EggLab - Qwen-Image-2.1 agent panel for PhotoCraft",
   "author": "EggLab contributors",

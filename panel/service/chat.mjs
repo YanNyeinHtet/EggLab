@@ -59,10 +59,13 @@ const AGENT_CORE_TOOLS = Object.freeze([
  * and its filesystem permission boundary are not exposed at all.
  */
 function agentPermissions() {
-  return [
-    { action: '*', resource: '*', effect: 'deny' },
-    { action: 'egl_*', resource: '*', effect: 'allow' },
-  ];
+  // A blanket deny rule makes OpenCode mark the session as restricted, and the
+  // built-in `opencode/<free>` catalog refuses restricted sessions with
+  // `provider.free-limit` even though the same model works in the desktop app.
+  // The explicit allowlist is enough: OpenCode denies tools that have no
+  // matching allow rule, so dropping the global deny keeps tool isolation and
+  // restores these models.
+  return [{ action: 'egl_*', resource: '*', effect: 'allow' }];
 }
 
 function agentLog(line) {

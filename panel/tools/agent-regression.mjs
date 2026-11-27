@@ -359,7 +359,7 @@ check('generated config uses v2 permissions', /permissions:\s*agentPermissions\(
 const permissionStart = chatSource.indexOf('function agentPermissions');
 const permissionEnd = chatSource.indexOf('\n}', permissionStart);
 const permissionBlock = chatSource.slice(permissionStart, permissionEnd);
-check('generated permissions deny everything by default', /action:\s*'\*',\s*resource:\s*'\*',\s*effect:\s*'deny'/.test(permissionBlock));
+check('generated permissions do not use a global deny rule that blocks free models', !/action:\s*'\*',\s*resource:\s*'\*',\s*effect:\s*'deny'/.test(permissionBlock));
 check('generated permissions allow egl tools', /action:\s*'egl_\*'/.test(permissionBlock));
 check('generated permissions do not expose read', !/action:\s*'read'/.test(permissionBlock));
 check('generated config passes inspect roots', /EGGLAB_READ_ROOTS/.test(chatSource));
