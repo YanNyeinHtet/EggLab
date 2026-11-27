@@ -1065,6 +1065,14 @@ export async function opencodeReport(force = false) {
   // The desktop app is the user-facing runtime. The CLI inside it is only a
   // diagnostic helper and must never be reported as "the OpenCode path".
   const desktopExe = opencodeService.desktopCandidates()[0] || settings.opencode?.desktopExe || null;
+  // OpenCode's built-in free catalog is usable from the running desktop
+  // service without any login or configured provider. When that service is
+  // live, its `opencode` provider is connected even if the executable lives in
+  // a folder we did not discover or the user has not pointed at it yet.
+  const liveService = await (async () => {
+    const info = opencodeService.serviceInfo();
+    return info ? opencodeService.ping(info) : false;
+  })();
   const oc = resolveOpenCode();
   const configuredPath = String(settings.opencode?.exe || '');
   const configuredMissing = Boolean(configuredPath) && !fs.existsSync(configuredPath);
@@ -1116,7 +1124,7 @@ export async function opencodeReport(force = false) {
     if (!hasModels) continue;
     if (['ollama', 'lmstudio', 'vllm'].includes(provider.provider)) {
       connectedProviderIds.add(provider.provider);
-    } else if (provider.provider === 'opencode' && desktopExe) {
+    } else if (provider.provider === 'opencode' && (desktopExe || liveService)) {
       connectedProviderIds.add(provider.provider);
     }
   }

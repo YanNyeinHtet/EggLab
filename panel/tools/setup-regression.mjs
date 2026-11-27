@@ -234,7 +234,7 @@ check(
 );
 check(
   'the built-in opencode provider is connected when the desktop app is present',
-  /provider\.provider === 'opencode' && desktopExe/.test(settingsSource) &&
+  /provider\.provider === 'opencode' && \(desktopExe \|\| liveService\)/.test(settingsSource) &&
     /desktopOnly/.test(settingsSource) &&
     /selectedDesktopOnly/.test(settingsSource),
 );
