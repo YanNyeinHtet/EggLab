@@ -493,6 +493,15 @@ const versionCache = new Map();
 export function clearOpenCodeCache() {
   whereCache = undefined;
   versionCache.clear();
+  // The provider report embeds detection results (desktopExe, connected
+  // providers). If it survives a path change, the UI keeps showing "not
+  // connected" for a provider that is now usable — so drop the cached report
+  // and model list together with the binary caches.
+  modelsCache = null;
+  modelsCacheKey = '';
+  modelsCacheAt = 0;
+  reportCache = null;
+  reportCacheAt = 0;
 }
 
 function whereOpenCode() {

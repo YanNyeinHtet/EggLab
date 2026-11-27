@@ -229,6 +229,10 @@ check(
     /never\s+change the user's selection|do not silently change/i.test(settingsSource),
 );
 check(
+  'detection invalidates the cached provider report',
+  /reportCache = null/.test(settingsSource) && /modelsCache = null/.test(settingsSource),
+);
+check(
   'the built-in opencode provider is connected when the desktop app is present',
   /provider\.provider === 'opencode' && desktopExe/.test(settingsSource) &&
     /desktopOnly/.test(settingsSource) &&
