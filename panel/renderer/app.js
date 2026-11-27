@@ -2146,13 +2146,17 @@ function renderProviders() {
     return;
   }
 
-  const all = S.providers || [];
+  // Only connected providers can be used by the agent. OpenCode lists models
+  // from every provider it knows, including built-in ones with no account;
+  // offering those here guarantees a failed turn. Keep this generic so any
+  // provider in that state is treated the same way, not a named exception.
+  const all = (S.providers || []).filter((provider) => provider.connected);
   if (!all.length) {
     const report = S.ocReport;
     const detail = report?.modelsError
       ? `<div class="providers-error">${esc(report.modelsError)}</div>`
       : '';
-    box.innerHTML = `<div class="providers-empty">No OpenCode models found. Connect a provider in OpenCode first.</div>${detail}`;
+    box.innerHTML = `<div class="providers-empty">No connected OpenCode models found. Connect a provider in OpenCode first.</div>${detail}`;
     return;
   }
 
@@ -2253,6 +2257,15 @@ function renderProviders() {
 
 async function selectModel(modelId) {
   if (!modelId || modelId === (S.settings?.opencode?.model || '')) return;
+  const providerId = modelId.split('/')[0];
+  const provider = (S.providers || []).find((p) => p.provider === providerId);
+  if (provider && !provider.connected) {
+    toast(
+      'That provider is not connected in OpenCode. Connect it there, or choose a model from a connected provider.',
+      'error',
+    );
+    return;
+  }
   try {
     S.settings = await api.patchSettings({ opencode: { model: modelId } });
     // Reveal the newly selected model's provider group.
@@ -3067,7 +3080,7 @@ function renderSetup() {
         <button class="mini" data-setup="save-setup-model" ${oc.found ? '' : 'disabled'}>Use this model</button>
       </div>
       ${ocReport ? `<p class="setup-note">${ocReport.providers?.length || 0} providers · ${ocReport.modelCount || 0} models · ${ocReport.auth?.length || 0} accounts${ocReport.modelsError ? ` · <span class="setup-err">${esc(ocReport.modelsError)}</span>` : ''}</p>` : ''}
-      ${ocReport?.selectedDesktopOnly ? `<p class="setup-note"><span class="setup-err">OpenCode's desktop-only free models do not work in the EggLab agent.</span> Choose a model from a connected provider such as <b>opencode-go</b>.</p>` : ''}
+      ${ocReport?.selectedDesktopOnly ? `<p class="setup-note"><span class="setup-err">This model's provider is not connected in OpenCode, so the agent cannot use it.</span> Choose a model from a connected provider.</p>` : ''}
       ${ocReport?.suggestedModel && (!ocReport.selectedConnected || !currentModel)
         ? `<p class="setup-note">Suggested free model: <b>${esc(ocReport.suggestedModel)}</b></p>
            <div class="setup-actions"><button class="mini" data-setup="use-suggested-model">Use ${esc(ocReport.suggestedModel)}</button></div>`

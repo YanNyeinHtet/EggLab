@@ -1910,8 +1910,8 @@ export async function send(text, files = [], refMap = {}) {
     result.error = `${model} stopped responding — no response from the model`;
   } else if (desktopOnlyFree(result) && !didWork(result)) {
     result.error =
-      `${model} is a desktop-only free model. It works in the OpenCode app, but this chat runs the CLI; ` +
-      'pick a free model from the connected opencode-go group in Settings (or subscribe to OpenCode Go).';
+      `${model} is not available to external clients. OpenCode limits some models to its own app; ` +
+      'choose a model from a connected provider in Settings.';
   } else if (freeLimit(result) && !didWork(result)) {
     result.error =
       `${model} free limit reached — connect a provider, subscribe to OpenCode Go, or choose another model in Settings.`;

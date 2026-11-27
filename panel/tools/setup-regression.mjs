@@ -193,6 +193,12 @@ check(
     !/pathLabel = report\.configuredPath/.test(rendererSource),
 );
 check(
+  'the model picker only offers connected providers, for every provider',
+  /filter\(\(provider\) => provider\.connected\)/.test(rendererSource) &&
+    /provider && !provider\.connected/.test(rendererSource) &&
+    !/this chat runs the CLI/.test(read('panel/service/chat.mjs')),
+);
+check(
   'detection remembers the desktop app but not the bundled CLI',
   /const desktopExe = opencodeService\.desktopCandidates\(\)\[0\]/.test(settingsSource) &&
     /const desktopExe = desktopCandidates\(\)\[0\]/.test(read('panel/service/setup.mjs')) &&
@@ -237,7 +243,7 @@ check(
 check(
   'desktop-only free models are not reported as free-limit errors',
   /desktopOnlyFree/.test(read('panel/service/chat.mjs')) &&
-    /is a desktop-only free model/.test(read('panel/service/chat.mjs')) &&
+    /is not available to external clients/.test(read('panel/service/chat.mjs')) &&
     /!desktopOnlyFree\(result\)/.test(read('panel/service/chat.mjs')),
 );
 
