@@ -9,8 +9,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
+import { DATA_DIR } from './paths.mjs';
 
 const HOME = os.homedir();
 const CONFIG_DIR = process.env.XDG_CONFIG_HOME
@@ -58,19 +59,105 @@ export async function ping(info) {
   }
 }
 
-/** Locate the installed desktop app (the CLI bundled inside it is not used). */
+/** A desktop exe the user picked in Settings wins over every guess. */
+export function configuredDesktopExe() {
+  const s = readJson(path.join(DATA_DIR, 'settings.json'));
+  const value = String(s?.opencode?.desktopExe || '');
+  try {
+    return value && fs.statSync(value).isFile() ? path.resolve(value) : '';
+  } catch {
+    return '';
+  }
+}
+
+function exists(file) {
+  try {
+    return fs.statSync(file).isFile();
+  } catch {
+    return false;
+  }
+}
+
+let registryCache;
+function registryDesktopPaths() {
+  if (registryCache !== undefined) return registryCache;
+  registryCache = [];
+  if (process.platform !== 'win32') return registryCache;
+  for (const hive of [
+    'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+    'HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+  ]) {
+    let out = '';
+    try {
+      out = execFileSync('reg.exe', ['query', hive, '/s', '/f', 'OpenCode'], {
+        encoding: 'utf8',
+        windowsHide: true,
+        timeout: 8000,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+    } catch {
+      continue;
+    }
+    for (const line of out.split(/\r?\n/)) {
+      const m = line.match(/InstallLocation\s+REG_SZ\s+(.+)$/i);
+      if (!m) continue;
+      const dir = m[1].trim();
+      for (const name of ['OpenCode.exe', 'opencode.exe']) {
+        const candidate = path.join(dir, name);
+        if (exists(candidate)) registryCache.push(candidate);
+      }
+    }
+  }
+  return registryCache;
+}
+
+/**
+ * Locate the installed desktop app. The official installer uses several
+ * locations depending on version and privileges, and a user can point at a
+ * custom exe in Settings, so this is a search — not a fixed three-path list.
+ * The CLI bundled inside the app is never the thing we launch here.
+ */
 export function desktopCandidates() {
   const local = process.env.LOCALAPPDATA || path.join(HOME, 'AppData', 'Local');
-  return [
-    path.join(local, 'Programs', '@opencode-aidesktop', 'OpenCode.exe'),
-    path.join(local, 'Programs', 'OpenCode', 'OpenCode.exe'),
-    path.join(HOME, 'Applications', 'OpenCode.exe'),
-  ].filter((p) => {
+  const pf = process.env.ProgramFiles || 'C:\\Program Files';
+  const pf86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
+  const configured = configuredDesktopExe();
+  const roots = [
+    path.join(local, 'Programs', '@opencode-aidesktop'),
+    path.join(local, 'Programs', 'OpenCode'),
+    path.join(local, 'Programs', 'opencode-desktop'),
+    path.join(local, 'OpenCode'),
+    path.join(pf, 'OpenCode'),
+    path.join(pf86, 'OpenCode'),
+    path.join(HOME, 'Applications'),
+  ].filter(Boolean);
+  const found = [];
+  const add = (file) => {
+    if (exists(file)) found.push(file);
+  };
+  if (configured) add(configured);
+  for (const dir of roots) {
+    add(path.join(dir, 'OpenCode.exe'));
+    add(path.join(dir, 'opencode.exe'));
+    // Versioned installs put the exe one folder deeper.
     try {
-      return fs.existsSync(p);
-    } catch {
-      return false;
-    }
+      for (const child of fs.readdirSync(dir)) {
+        add(path.join(dir, child, 'OpenCode.exe'));
+        add(path.join(dir, child, 'opencode.exe'));
+      }
+    } catch {}
+  }
+  if (!found.length) {
+    for (const file of registryDesktopPaths()) add(file);
+  }
+  // Windows paths are case-insensitive: OpenCode.exe and opencode.exe in the
+  // same folder are one file, not two candidates.
+  const seen = new Set();
+  return found.filter((p) => {
+    const key = path.resolve(p).toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
   });
 }
 

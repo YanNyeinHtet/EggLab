@@ -174,6 +174,19 @@ check(
     /Download desktop app/.test(rendererSource),
 );
 check(
+  'desktop discovery searches install locations and remembers a picked exe',
+  /configuredDesktopExe/.test(read('panel/service/opencode-service.mjs')) &&
+    /Program Files/.test(read('panel/service/opencode-service.mjs')) &&
+    /desktopExe/.test(settingsSource) &&
+    /desktopExe: installed/.test(read('panel/service/setup.mjs')),
+);
+check(
+  'the settings drawer no longer offers the standalone CLI installer',
+  !/Download CLI/.test(read('panel/renderer/index.html')) &&
+    /api\.setupAction\('opencode-desktop'\)/.test(rendererSource) &&
+    !/api\.setupAction\('opencode'\)/.test(rendererSource),
+);
+check(
   'OpenCode desktop app resolves to its CLI',
   /desktopOpenCodeCandidates\(\), \.\.\.managedOpenCodeCandidates\(\)/.test(settingsSource) &&
     /desktopApp/.test(settingsSource),

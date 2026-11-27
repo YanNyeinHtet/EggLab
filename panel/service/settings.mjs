@@ -644,7 +644,11 @@ export function resolveOpenCode() {
   return { cmd: 'opencode', shell: false, version: null };
 }
 
-/** Save the user's own OpenCode binary. Accepts the desktop app and resolves it to its CLI. */
+/**
+ * Save the user's own OpenCode binary. A desktop GUI exe is now a valid choice:
+ * chat runs against the desktop service, so the path is stored as the desktop
+ * runtime instead of being rejected or replaced by a bundled CLI.
+ */
 export function setOpenCodePath(file) {
   const abs = path.resolve(String(file || ''));
   let stat = null;
@@ -654,28 +658,27 @@ export function setOpenCodePath(file) {
   if (!stat || !stat.isFile()) throw new Error('That OpenCode executable does not exist.');
   const version = probeOpenCodeVersion(abs);
 
-  // The OpenCode desktop app is an Electron GUI: `--version` prints nothing
-  // and opens the app instead. Users naturally pick it. Resolve it to the CLI
-  // that the desktop app itself uses; never store the GUI binary.
+  // The desktop app is an Electron GUI: `--version` prints nothing. Save it as
+  // the desktop runtime; a bundled CLI, when present, is still useful for
+  // discovery commands but is no longer required for the agent to run.
   if (!version && /^opencode/i.test(path.basename(abs))) {
-    const candidates = [...desktopOpenCodeCandidates(), ...managedOpenCodeCandidates()].filter(
-      (candidate) => path.resolve(candidate) !== path.resolve(abs),
+    const cli = [...desktopOpenCodeCandidates(), ...managedOpenCodeCandidates()].find(
+      (candidate) =>
+        path.resolve(candidate) !== path.resolve(abs) &&
+        /cli\.exe$/i.test(candidate) &&
+        (probeOpenCodeVersion(candidate)?.[0] || 0) >= 2,
     );
-    const cli = candidates.find((candidate) => {
-      const candidateVersion = probeOpenCodeVersion(candidate);
-      return candidateVersion && candidateVersion[0] >= 2 && /cli\.exe$/i.test(candidate);
-    });
-    if (cli) {
-      patchSettings({ opencode: { exe: cli } });
-      clearOpenCodeCache();
-      modelsCache = null;
-      modelsCacheKey = '';
-      reportCache = null;
-      return { exe: cli, version: probeOpenCodeVersion(cli).join('.'), desktopApp: abs };
-    }
-    throw new Error(
-      'That is the OpenCode desktop app. EggLab needs its CLI (opencode-cli.exe), but none was found. Pick opencode-cli.exe or install the CLI.',
-    );
+    patchSettings({ opencode: { desktopExe: abs, ...(cli ? { exe: cli } : {}) } });
+    clearOpenCodeCache();
+    modelsCache = null;
+    modelsCacheKey = '';
+    reportCache = null;
+    return {
+      exe: cli || abs,
+      version: cli ? probeOpenCodeVersion(cli).join('.') : null,
+      desktopApp: abs,
+      desktopExe: abs,
+    };
   }
 
   if (!version) throw new Error('That file did not start as OpenCode. Pick opencode.exe or opencode-cli.exe.');

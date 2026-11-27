@@ -563,8 +563,10 @@ const OPENCODE_DESKTOP_URL =
 
 export async function installOpencodeDesktop() {
   if (state.opencode.running) return { started: false, running: true };
-  if (desktopCandidates().length) {
-    // Already installed: just start it and wait for its local service.
+  const existing = desktopCandidates()[0];
+  if (existing) {
+    // Already installed: remember where, start it and wait for its service.
+    patchSettings({ opencode: { desktopExe: existing } });
     try {
       await launchDesktop();
       await ensureService(45000);
@@ -572,7 +574,7 @@ export async function installOpencodeDesktop() {
       return { started: false, error: err.message };
     }
     emit('settings', { settings: getSettings() });
-    return { started: false, alreadyInstalled: true, service: true };
+    return { started: false, alreadyInstalled: true, service: true, exe: existing };
   }
   state.opencode = { running: true, phase: 'downloading', received: 0, total: 0, error: null };
   emit('setup', { step: 'opencode', status: 'downloading' });
@@ -590,13 +592,25 @@ export async function installOpencodeDesktop() {
     while (!desktopCandidates().length && Date.now() < until) {
       await new Promise((r) => setTimeout(r, 700));
     }
-    if (!desktopCandidates().length) {
-      throw new Error('OpenCode desktop was installed but its executable was not found. Locate it in Setup.');
+    const installed = desktopCandidates()[0];
+    if (!installed) {
+      throw new Error(
+        'OpenCode desktop was installed but its executable was not found. Use "Use existing..." in Setup to point at OpenCode.exe.',
+      );
     }
+    // Remember the discovered path so the runtime keeps finding it even if the
+    // installer used a non-default location.
+    patchSettings({ opencode: { desktopExe: installed } });
     await launchDesktop();
+    try {
+      await ensureService(60000);
+    } catch (err) {
+      // The app may need a first sign-in; Setup still reports the install.
+      emit('setup', { step: 'opencode', status: 'warn', error: err.message });
+    }
     state.opencode.phase = 'done';
     state.opencode.received = state.opencode.total;
-    emit('setup', { step: 'opencode', status: 'done', desktop: true });
+    emit('setup', { step: 'opencode', status: 'done', desktop: true, exe: installed });
     emit('settings', { settings: getSettings() });
   })()
     .catch((err) => {

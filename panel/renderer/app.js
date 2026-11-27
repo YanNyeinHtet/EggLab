@@ -2759,7 +2759,7 @@ function bind() {
         await refreshRuntime();
         await refreshProviders(true);
         if (result?.desktopApp) {
-          toast(`Using the OpenCode desktop CLI: ${result.exe}`, 'ok');
+          toast(`Using OpenCode desktop: ${result.desktopApp || result.exe}`, 'ok');
         } else {
           toast('OpenCode linked. Providers and models loaded from that binary.', 'ok');
         }
@@ -2773,8 +2773,8 @@ function bind() {
     installOpenCodeBtn.onclick = async () => {
       installOpenCodeBtn.disabled = true;
       try {
-        await api.setupAction('opencode');
-        toast('Downloading the OpenCode CLI…', 'ok');
+        await api.setupAction('opencode-desktop');
+        toast('Downloading the OpenCode desktop app…', 'ok');
       } catch (err) {
         toast(friendly(err), 'error');
         installOpenCodeBtn.disabled = false;
@@ -3195,7 +3195,7 @@ async function onSetupAction(action) {
         if (!file) return;
         const result = await api.setupAction('opencode-path', { path: file });
         if (result?.selected?.desktopApp) {
-          toast(`Using the OpenCode desktop CLI: ${result.selected.exe}`, 'ok');
+          toast(`Using OpenCode desktop: ${result.selected.desktopExe || result.selected.exe}`, 'ok');
         } else {
           toast('OpenCode linked. Providers and models loaded from that binary.', 'ok');
         }
