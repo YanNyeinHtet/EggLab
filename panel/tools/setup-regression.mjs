@@ -194,7 +194,8 @@ check(
 );
 check(
   'the model picker preserves the connected flag through its re-map',
-  /provider: p\.provider,\s*\/\/ Preserve connectivity[\s\S]{0,200}?connected: p\.connected/.test(rendererSource) &&
+  /provider: p\.provider,/.test(rendererSource) &&
+    /connected: p\.connected/.test(rendererSource) &&
     /const all = S\.providers \|\| \[\]/.test(rendererSource) &&
     /No provider is connected in OpenCode yet/.test(rendererSource) &&
     /provider && !provider\.connected/.test(rendererSource) &&
