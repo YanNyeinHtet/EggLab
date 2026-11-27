@@ -2110,12 +2110,17 @@ function renderOcStatus() {
   if (report.modelsError) add(report.modelsError, 'bad');
   if (report.authError) add(`Accounts unavailable: ${report.authError}`, 'warn');
   if (selected) {
-    if (!report.selectedAvailable) {
+    if (report.selectedDesktopOnly) {
+      add(`Selected model works only in the OpenCode desktop app: ${selected}`, 'warn');
+    } else if (!report.selectedAvailable) {
       add(`Selected model is not in the current list: ${selected}`, 'warn');
     } else if (!report.selectedConnected) {
       add(`Selected model provider is not connected: ${selected}`, 'warn');
     } else {
       add(`Selected model available: ${selected}`, 'dim');
+    }
+    if (!report.selectedConnected && report.suggestedModel) {
+      add(`CLI-ready free model: ${report.suggestedModel}`, 'warn');
     }
     if (/(?:^|\/)[^/]*-free(?:$|#)/i.test(selected) || /-free/i.test(selected)) {
       add('Free model selected. Provider/free limits can pause chats.', 'warn');
@@ -2971,8 +2976,30 @@ async function loadSetup() {
     toast(friendly(err), 'error');
     return;
   }
+  try {
+    await loadSetupModels(false);
+  } catch {}
   renderSetup();
   if (S.setup.firstRun) showSetup();
+}
+
+// Setup only offers models from connected providers. Desktop-only OpenCode
+// free models (`opencode/<free>`) fail from the CLI, so they are never shown
+// as a fresh choice — an invalid current selection is kept for replacement.
+async function loadSetupModels(force = false) {
+  const report = await api.opencodeReport(force);
+  S.setupOcReport = report;
+  const models = [];
+  let connectedCount = 0;
+  for (const provider of report.providers || []) {
+    if (!provider.connected) continue;
+    connectedCount++;
+    for (const model of provider.models || []) models.push(model.id);
+  }
+  const current = S.settings?.opencode?.model || '';
+  if (current && !models.includes(current)) models.unshift(current);
+  S.setupOcModels = models;
+  return { report, connectedCount, models };
 }
 
 function setupBadge(ok, onText = 'Ready', offText = 'Missing') {
@@ -3008,11 +3035,14 @@ function renderSetup() {
   const pick = S.setupVariant || 'auto';
   const opt = (value, label) => `<option value="${value}" ${pick === value ? 'selected' : ''}>${label}</option>`;
   const currentModel = S.settings?.opencode?.model || '';
+  const ocReport = S.setupOcReport || null;
   const modelChoices = Array.isArray(S.setupOcModels) ? S.setupOcModels : [];
   const setupModelOptions = (modelChoices.length ? modelChoices : currentModel ? [currentModel] : [])
-    .map((m) => `<option value="${esc(m)}" ${m === currentModel ? 'selected' : ''}>${esc(m)}</option>`)
+    .map((m) => {
+      const stale = m === currentModel && ocReport && !ocReport.selectedConnected;
+      return `<option value="${esc(m)}" ${m === currentModel ? 'selected' : ''}>${esc(m)}${stale ? ' (not connected)' : ''}</option>`;
+    })
     .join('');
-  const ocReport = S.setupOcReport || null;
 
   $('#setupBody').innerHTML = `
     <div class="setup-step ${pc.found ? 'ok' : 'miss'}">
@@ -3038,6 +3068,11 @@ function renderSetup() {
         <button class="mini" data-setup="save-setup-model" ${oc.found ? '' : 'disabled'}>Use this model</button>
       </div>
       ${ocReport ? `<p class="setup-note">${ocReport.providers?.length || 0} providers · ${ocReport.modelCount || 0} models · ${ocReport.auth?.length || 0} accounts${ocReport.modelsError ? ` · <span class="setup-err">${esc(ocReport.modelsError)}</span>` : ''}</p>` : ''}
+      ${ocReport?.selectedDesktopOnly ? `<p class="setup-note"><span class="setup-err">OpenCode's desktop-only free models do not work in EggLab's CLI.</span> Choose a model from a connected provider such as <b>opencode-go</b>.</p>` : ''}
+      ${ocReport?.suggestedModel && (!ocReport.selectedConnected || !currentModel)
+        ? `<p class="setup-note">Suggested CLI-ready free model: <b>${esc(ocReport.suggestedModel)}</b></p>
+           <div class="setup-actions"><button class="mini" data-setup="use-suggested-model">Use ${esc(ocReport.suggestedModel)}</button></div>`
+        : ''}
       <p class="setup-note">${S.settings?.opencode?.model ? `Current model: ${esc(S.settings.opencode.model)}` : 'Choose the chat model after OpenCode is connected.'}</p>
     </div>
     <div class="setup-step ${en.running ? 'busy' : en.installed ? 'ok' : 'miss'}">
@@ -3174,21 +3209,32 @@ async function onSetupAction(action) {
         break;
       }
       case 'refresh-setup-models': {
-        const report = await api.opencodeReport(true);
-        S.setupOcReport = report;
-        const models = [];
-        for (const provider of report.providers || []) {
-          for (const model of provider.models || []) models.push(model.id);
-        }
-        S.setupOcModels = models;
+        const { report, connectedCount, models } = await loadSetupModels(true);
         renderSetup();
         if (report.modelsError) toast(report.modelsError, 'error');
-        else toast(`${models.length} model${models.length === 1 ? '' : 's'} from ${report.providers?.length || 0} provider${report.providers?.length === 1 ? '' : 's'}.`, 'ok');
+        else toast(`${models.length} model${models.length === 1 ? '' : 's'} from ${connectedCount} connected provider${connectedCount === 1 ? '' : 's'}.`, 'ok');
+        break;
+      }
+      case 'use-suggested-model': {
+        const model = S.setupOcReport?.suggestedModel || '';
+        if (!model) return toast('No connected model was found. Connect a provider in OpenCode, then refresh.', 'error');
+        S.settings = await api.patchSettings({ opencode: { model } });
+        renderSetup();
+        toast(`Chat model: ${model}`, 'ok');
         break;
       }
       case 'save-setup-model': {
         const model = document.getElementById('setupOcModel')?.value || '';
         if (!model) return toast('Choose a model first.', 'error');
+        const report = S.setupOcReport;
+        if (report?.providers?.length) {
+          const usable = report.providers.some(
+            (p) => p.connected && (p.models || []).some((m) => m.id === model),
+          );
+          if (!usable) {
+            return toast('That model has no connected provider in OpenCode. Use a suggested free model instead.', 'error');
+          }
+        }
         S.settings = await api.patchSettings({ opencode: { model } });
         renderSetup();
         toast('Agent model saved.', 'ok');

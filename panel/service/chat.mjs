@@ -1765,8 +1765,18 @@ export async function send(text, files = [], refMap = {}) {
   // Provider/account limits cannot heal inside one turn. Retrying them burns
   // the whole retry budget while the user waits on "retrying 1/6". Surface the
   // actual fix immediately: connect a provider, add credits, or change model.
+  // OpenCode's built-in `opencode/<free>` models work in its desktop app but
+  // not from the CLI this chat spawns. That is a model-choice error, not an
+  // exhausted daily allowance: keep it separate so the user is told which
+  // provider group to pick instead of being told the free limit was reached.
+  const desktopOnlyFree = (r) =>
+    !r.stopped &&
+    /free models work in opencode|subscribe to opencode go|opencode go to keep going/i.test(
+      `${r.text} ${r.stderr} ${r.error || ''}`,
+    );
   const freeLimit = (r) =>
     !r.stopped &&
+    !desktopOnlyFree(r) &&
     /free usage limit|freeusage(?:limit|error)|provider\.free-limit|free limit|free-models-per-day|per-day limit|daily (?:limit|quota)|free model requires|requires team balance|balance greater than|add \d+ credits|payment required|\b402\b/i.test(
       `${r.text} ${r.stderr} ${r.error || ''}`,
     );
@@ -1783,6 +1793,7 @@ export async function send(text, files = [], refMap = {}) {
   const dailyQuota = (r) => freeLimit(r);
   const atCapacity = (r) =>
     !freeLimit(r) &&
+    !desktopOnlyFree(r) &&
     !authError(r) &&
     !modelUnavailable(r) &&
     !r.stopped &&
@@ -1825,6 +1836,7 @@ export async function send(text, files = [], refMap = {}) {
     !turnStopped &&
     attempts < maxRetries &&
     !freeLimit(result) &&
+    !desktopOnlyFree(result) &&
     !authError(result) &&
     !modelUnavailable(result) &&
     (atCapacity(result) || transient(result) || stalled(result)) &&
@@ -1847,6 +1859,10 @@ export async function send(text, files = [], refMap = {}) {
 
   if (stalled(result) && !result.error) {
     result.error = `${model} stopped responding — no response from the model`;
+  } else if (desktopOnlyFree(result) && !didWork(result)) {
+    result.error =
+      `${model} is a desktop-only free model. It works in the OpenCode app, but this chat runs the CLI; ` +
+      'pick a free model from the connected opencode-go group in Settings (or subscribe to OpenCode Go).';
   } else if (freeLimit(result) && !didWork(result)) {
     result.error =
       `${model} free limit reached — connect a provider, subscribe to OpenCode Go, or choose another model in Settings.`;

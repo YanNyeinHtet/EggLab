@@ -713,7 +713,7 @@ export async function chooseDefaultOpenCodeModel(force = false) {
     .sort((a, b) => a.id.localeCompare(b.id));
   const free = pool.filter((model) => /-free(?:$|#)/i.test(model.id) || /-free/i.test(model.modelId));
   const fast = pool.filter((model) => /flash/i.test(model.id) || /flash/i.test(model.modelId));
-  const suggested = free[0]?.id || fast[0]?.id || pool[0]?.id || '';
+  const suggested = report.suggestedModel || free[0]?.id || fast[0]?.id || pool[0]?.id || '';
   return {
     selected: current,
     suggested,
@@ -1032,6 +1032,9 @@ export async function opencodeReport(force = false) {
       configPath: null,
       selectedModel: settings.opencode?.model || null,
       selectedAvailable: false,
+      selectedConnected: false,
+      selectedDesktopOnly: false,
+      suggestedModel: '',
     };
   }
   const [paths, auth, models, config] = await Promise.all([
@@ -1044,34 +1047,49 @@ export async function opencodeReport(force = false) {
   const activeProviderIds = new Set(auth.activeProviderIds || []);
   const configuredProviderIds = new Set(Object.keys(config.providers || {}));
   const connectedProviderIds = new Set([...activeProviderIds, ...configuredProviderIds]);
+  // Local runtimes need no saved account and stay routable when their models
+  // are present. OpenCode's built-in `opencode` catalog is different: those
+  // free models work in the desktop app, but the CLI EggLab spawns needs an
+  // OpenCode Go credential. Never mark `opencode` connected on the strength of
+  // a model listing alone — doing so made every `opencode/<free>` selection
+  // fail with a misleading "free limit reached" error, including on fresh
+  // installs.
+  for (const provider of models.providers || []) {
+    if (['ollama', 'lmstudio', 'vllm'].includes(provider.provider) && (provider.models || []).length) {
+      connectedProviderIds.add(provider.provider);
+    }
+  }
   const providers = (models.providers || []).map((provider) => {
     const connected = connectedProviderIds.has(provider.provider);
     return {
       ...provider,
       connected,
       active: connected,
+      desktopOnly: provider.provider === 'opencode' && !connected,
     };
   });
-  // Local runtimes and OpenCode's own free tier do not need a saved account,
-  // but they are still routable when their models are present.
-  for (const provider of providers) {
-    if (
-      ['ollama', 'lmstudio', 'vllm'].includes(provider.provider) ||
-      provider.provider === 'opencode'
-    ) {
-      if ((provider.models || []).length) connectedProviderIds.add(provider.provider);
-    }
-  }
-  for (const provider of providers) {
-    provider.connected = connectedProviderIds.has(provider.provider);
-    provider.active = provider.connected;
-  }
-  const selectedAvailable = Boolean(
-    selectedModel && providers.some((provider) => provider.models.some((model) => model.id === selectedModel)),
-  );
-  const selectedConnected = Boolean(
-    selectedModel && providers.some((provider) => provider.connected && provider.models.some((model) => model.id === selectedModel)),
-  );
+  const selectedProvider = selectedModel
+    ? providers.find((provider) => (provider.models || []).some((model) => model.id === selectedModel))
+    : null;
+  const selectedAvailable = Boolean(selectedProvider);
+  const selectedConnected = Boolean(selectedProvider?.connected);
+  const selectedDesktopOnly = Boolean(selectedProvider?.desktopOnly);
+  // The suggested model always comes from a connected provider, preferring a
+  // free one. Setup uses this to offer a working model in one click instead of
+  // letting the user pick a desktop-only `opencode/<free>` ID.
+  const connectedModels = providers
+    .filter((provider) => provider.connected)
+    .flatMap((provider) => (provider.models || []).map((model) => ({ ...model, provider: provider.provider })))
+    .sort((a, b) => a.id.localeCompare(b.id));
+  const freeModels = connectedModels
+    .filter((model) => /-free(?:$|#)/i.test(model.id) || /-free/i.test(model.modelId))
+    // Prefer OpenCode Go: it is OpenCode's own free CLI tier and the model
+    // group users reach for when they ask for a free OpenCode model.
+    .sort((a, b) => {
+      const rank = (m) => (m.provider === 'opencode-go' ? 0 : 1);
+      return rank(a) - rank(b) || a.id.localeCompare(b.id);
+    });
+  const suggestedModel = freeModels[0]?.id || connectedModels[0]?.id || '';
   const value = {
     ok: true,
     bin: oc.cmd,
@@ -1098,6 +1116,8 @@ export async function opencodeReport(force = false) {
     selectedModel,
     selectedAvailable,
     selectedConnected,
+    selectedDesktopOnly,
+    suggestedModel,
   };
   if (models.error) return value;
   reportCache = value;

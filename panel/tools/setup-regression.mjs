@@ -183,6 +183,25 @@ check(
     /No agent model is selected/.test(read('panel/service/chat.mjs')) &&
     /never\s+change the user's selection|do not silently change/i.test(settingsSource),
 );
+check(
+  'a model listing alone cannot mark the opencode provider connected',
+  !/\|\|\s*provider\.provider === 'opencode'/.test(settingsSource) &&
+    /desktopOnly/.test(settingsSource) &&
+    /selectedDesktopOnly/.test(settingsSource),
+);
+check(
+  'setup offers only connected models and one-click free suggestion',
+  /loadSetupModels/.test(rendererSource) &&
+    /if \(!provider\.connected\) continue/.test(rendererSource) &&
+    /use-suggested-model/.test(rendererSource) &&
+    /suggestedModel/.test(settingsSource),
+);
+check(
+  'desktop-only free models are not reported as free-limit errors',
+  /desktopOnlyFree/.test(read('panel/service/chat.mjs')) &&
+    /is a desktop-only free model/.test(read('panel/service/chat.mjs')) &&
+    /!desktopOnlyFree\(result\)/.test(read('panel/service/chat.mjs')),
+);
 
 // ---- PowerShell parse (Windows only) ----------------------------------
 function parsePs1(file) {
