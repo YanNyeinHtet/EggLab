@@ -178,9 +178,13 @@ export async function refreshDetection() {
     }
   }
   clearOpenCodeCache();
-  const oc = resolveOpenCode();
-  if (oc.cmd !== 'opencode' && fs.existsSync(oc.cmd) && oc.cmd !== s.opencode?.exe) {
-    patch.opencode = { exe: oc.cmd };
+  // Remember the desktop app when it is installed. Do not persist the CLI that
+  // ships inside it: that is an internal diagnostic binary, not the runtime the
+  // user selected, and showing it as "OpenCode path" was the source of the
+  // "why does it say CLI?" report.
+  const desktopExe = desktopCandidates()[0];
+  if (desktopExe && desktopExe !== s.opencode?.desktopExe) {
+    patch.opencode = { ...(patch.opencode || {}), desktopExe };
   }
   if (Object.keys(patch).length) patchSettings(patch);
   return setupStatus();

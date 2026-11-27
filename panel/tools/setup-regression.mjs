@@ -188,7 +188,15 @@ check(
 );
 check(
   'settings shows the desktop exe, not the bundled CLI path',
-  /s\.opencode\?\.desktopExe \|\| S\.ocReport\?\.configuredPath/.test(rendererSource),
+  /S\.ocReport\?\.desktopExe \|\| s\.opencode\?\.desktopExe/.test(rendererSource) &&
+    /report\.desktopExe \|\| S\.settings/.test(rendererSource) &&
+    !/pathLabel = report\.configuredPath/.test(rendererSource),
+);
+check(
+  'detection remembers the desktop app but not the bundled CLI',
+  /const desktopExe = opencodeService\.desktopCandidates\(\)\[0\]/.test(settingsSource) &&
+    /const desktopExe = desktopCandidates\(\)\[0\]/.test(read('panel/service/setup.mjs')) &&
+    !/patch\.opencode = \{ exe: oc\.cmd \}/.test(read('panel/service/setup.mjs')),
 );
 check(
   'the desktop installer is opened for the user to complete',

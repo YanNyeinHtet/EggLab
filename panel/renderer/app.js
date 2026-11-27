@@ -1712,7 +1712,9 @@ function syncUI() {
   }
   const ocExeEl = $('#ocExe');
   if (ocExeEl) {
-    const selected = s.opencode?.desktopExe || S.ocReport?.configuredPath || s.opencode?.exe || '';
+    // Only the desktop app is the user-facing OpenCode runtime; the bundled
+    // CLI is an internal diagnostic binary and must not be shown as a choice.
+    const selected = S.ocReport?.desktopExe || s.opencode?.desktopExe || '';
     ocExeEl.value = selected;
     ocExeEl.title = selected;
   }
@@ -2079,17 +2081,14 @@ function renderOcStatus() {
   }
   if (!report.ok) {
     add(report.error || 'OpenCode v2 or newer was not found.', 'bad');
-    if (report.configuredPath) {
-      add(`Selected path: ${report.configuredPath}${report.configuredMissing ? ' (missing)' : ''}`, 'dim');
-    }
+    const shown = report.desktopExe || S.settings?.opencode?.desktopExe;
+    if (shown) add(`Selected path: ${shown}`, 'dim');
     box.innerHTML = rows.join('');
     return;
   }
   const version = report.version || '2.x';
-  const pathLabel = report.configuredPath
-    ? `${report.configuredMissing ? 'selected path missing; using ' : ''}${report.bin}`
-    : report.bin;
-  add(`OpenCode ${version} · ${pathLabel}`);
+  const shownPath = report.desktopExe || S.settings?.opencode?.desktopExe || '';
+  add(`OpenCode ${version}${shownPath ? ` · ${shownPath}` : ' · desktop app path not set'}`);
   add(
     S.settings?.opencode?.betaAgent
       ? 'Agent: beta (egglab-beta) — developing version'

@@ -1053,6 +1053,9 @@ export async function opencodeConfigInfo(oc = resolveOpenCode()) {
 export async function opencodeReport(force = false) {
   const now = Date.now();
   if (!force && reportCache && now - reportCacheAt < REPORT_CACHE_TTL) return reportCache;
+  // The desktop app is the user-facing runtime. The CLI inside it is only a
+  // diagnostic helper and must never be reported as "the OpenCode path".
+  const desktopExe = opencodeService.desktopCandidates()[0] || settings.opencode?.desktopExe || null;
   const oc = resolveOpenCode();
   const configuredPath = String(settings.opencode?.exe || '');
   const configuredMissing = Boolean(configuredPath) && !fs.existsSync(configuredPath);
@@ -1074,6 +1077,7 @@ export async function opencodeReport(force = false) {
       modelsError: null,
       activeModel: null,
       configPath: null,
+      desktopExe,
       selectedModel: settings.opencode?.model || null,
       selectedAvailable: false,
       selectedConnected: false,
@@ -1139,6 +1143,7 @@ export async function opencodeReport(force = false) {
     bin: oc.cmd,
     configuredPath,
     configuredMissing,
+    desktopExe,
     version: oc.version.join('.'),
     paths,
     auth: auth.providers,
